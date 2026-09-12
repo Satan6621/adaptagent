@@ -5,7 +5,7 @@ from .config import _load_env_file
 
 _load_env_file()
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 from .agents import Agent, AgentManager  # noqa: E402
 from .evolution import Evaluator, EvolutionEngine, LLMJudgeEvaluator  # noqa: E402
