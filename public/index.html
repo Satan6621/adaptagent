@@ -47,11 +47,14 @@
 <body>
 <header>
   <h1>Adapt<span>Agent</span> Playground</h1>
-  <span style="font-size:12px;color:var(--muted)">genera · edita · ejecuta · evoluciona</span>
+  <span style="font-size:12px;color:var(--muted)">genera · edita · ejecuta · comparte</span>
   <div class="spacer"></div>
   <button class="btn" id="btnNew" title="Empezar de cero">✕ Nuevo</button>
+  <button class="btn" id="btnLibrary" title="Workflows guardados en este navegador">💾 Biblioteca</button>
   <button class="btn" id="btnImport">Importar</button>
+  <button class="btn" id="btnShare" disabled title="Link compartible en el hash de la URL">🔗 Compartir</button>
   <button class="btn" id="btnExport">Exportar</button>
+  <button class="btn" id="btnExportPy" disabled title="Descargar script Python ejecutable">🐍 Python</button>
   <button class="btn" id="btnRun" disabled title="Ejecuta el workflow mostrado (streaming)">▶ Ejecutar</button>
   <button class="btn primary" id="btnGenerate">⚡ Generar</button>
 </header>
@@ -109,6 +112,16 @@
       <option>analyst</option><option>critic</option><option>reviewer</option>
     </select>
     <label>Dependencias (ids separados por coma)</label><input type="text" id="mInputs" placeholder="step1, step2">
+    <label>Condición de entrada (opcional)</label>
+    <select id="mCondRule">
+      <option value="">— siempre ejecutar —</option>
+      <option value="contains">si la fuente CONTIENE texto</option>
+      <option value="not_contains">si la fuente NO contiene texto</option>
+      <option value="nonempty">si la fuente no está vacía</option>
+      <option value="regex">si la fuente cumple regex</option>
+    </select>
+    <input type="text" id="mCondSource" placeholder="id del paso fuente (ej: s1)" style="margin-top:6px">
+    <input type="text" id="mCondValue" placeholder="texto o patrón regex" style="margin-top:6px">
     <div class="row">
       <button class="btn" id="mDelete">Eliminar nodo</button>
       <button class="btn" id="mCancel">Cancelar</button>
@@ -191,8 +204,101 @@ document.getElementById("btnNew").onclick = () => {
   if (!confirm("¿Empezar un workflow nuevo? Se perderá el actual.")) return;
   workflow = { goal: "", steps: [] };
   document.getElementById("goalInput").value = "";
+  history.replaceState(null, "", location.pathname);
   afterWorkflowLoaded("Workflow nuevo.");
 };
+
+// --- shareable link (hash-encoded, zero backend) ---
+function encodeShare(wf) {
+  try { return btoa(unescape(encodeURIComponent(JSON.stringify(wf)))).replace(/\+/g, "-").replace(/\//g, "_"); }
+  catch { return ""; }
+}
+function decodeShare(hash) {
+  try {
+    const b64 = hash.replace(/-/g, "+").replace(/_/g, "/");
+    return JSON.parse(decodeURIComponent(escape(atob(b64))));
+  } catch { return null; }
+}
+const btnRun = document.getElementById("btnRun");
+btnRun.onclick = runWorkflow;
+const btnShare = document.getElementById("btnShare");
+btnShare.onclick = () => {
+  if (!workflow.steps?.length) return;
+  history.replaceState(null, "", location.pathname + "#w=" + encodeShare(workflow));
+  navigator.clipboard?.writeText(location.href).then(
+    () => log("✓ Link copiado al portapapeles — compártelo."),
+    () => log("Link generado en la barra de direcciones.")
+  );
+};
+(function loadFromHash() {
+  const m = location.hash.match(/#w=(.+)$/);
+  if (m) {
+    const wf = decodeShare(m[1]);
+    if (wf?.steps?.length) { workflow = wf; if (wf.goal) document.getElementById("goalInput").value = wf.goal; }
+  }
+})();
+
+// --- library: saved workflows in localStorage ---
+const LIB_KEY = "adaptagent_library";
+const btnLibrary = document.getElementById("btnLibrary");
+btnLibrary.onclick = () => {
+  const lib = JSON.parse(localStorage.getItem(LIB_KEY) || "[]");
+  if (!workflow.steps?.length && !lib.length) { log("Nada guardado aún — crea un workflow primero.", true); return; }
+  let html = "<div style='margin-bottom:8px;color:var(--accent)'>Biblioteca local:</div>";
+  if (workflow.steps?.length) html += `<div class="libitem">📄 <b>Actual:</b> ${escapeHtml(workflow.goal || workflow.steps[0].name)} <button class="btn" onclick="saveToLib()" style="padding:2px 10px;font-size:11px">guardar</button></div>`;
+  lib.forEach((item, i) => {
+    html += `<div class="libitem">🗂 ${escapeHtml(item.goal || item.steps?.[0]?.name || "sin título")} <button class="btn" onclick="loadFromLib(${i})" style="padding:2px 10px;font-size:11px">cargar</button> <button class="btn" onclick="delFromLib(${i})" style="padding:2px 10px;font-size:11px">✕</button></div>`;
+  });
+  document.getElementById("runResults").innerHTML = html;
+  document.getElementById("resultsPanel").style.display = "block";
+  window._lib = lib;
+};
+function saveToLib() {
+  const lib = JSON.parse(localStorage.getItem(LIB_KEY) || "[]");
+  lib.push(workflow);
+  localStorage.setItem(LIB_KEY, JSON.stringify(lib));
+  log("✓ Guardado en la biblioteca.");
+}
+function loadFromLib(i) { workflow = window._lib[i]; afterWorkflowLoaded("Workflow cargado de la biblioteca."); }
+function delFromLib(i) { const lib = window._lib; lib.splice(i, 1); localStorage.setItem(LIB_KEY, JSON.stringify(lib)); btnLibrary.onclick(); }
+
+// --- export to Python script ---
+const btnExportPy = document.getElementById("btnExportPy");
+btnExportPy.onclick = exportPython;
+function exportPython() {
+  if (!workflow.steps?.length) return;
+  const pyWorkflow = JSON.stringify(workflow, null, 2);
+  const script = `#!/usr/bin/env python3
+"""Generated by AdaptAgent Playground — ${new Date().toISOString()}
+Run: pip install adaptagent && python workflow.py
+"""
+import asyncio
+
+from adaptagent import AgentManager, LLMConfig, Workflow, resolve_llm
+
+WORKFLOW = ${pyWorkflow}
+
+
+async def main() -> None:
+    llm = resolve_llm(LLMConfig())  # configure via env vars or edit here
+    from adaptagent.workflow import WorkflowGraph
+    graph = WorkflowGraph.from_json(__import__("json").dumps(WORKFLOW))
+    manager = AgentManager()
+    manager.register_llm(llm)
+    manager.build_agents_from_workflow(graph)
+    output = await Workflow(graph=graph, agent_manager=manager, llm=llm).execute()
+    print(output.final_output)
+    print(f"\\nCost: ${output.total_cost_usd:.4f} USD | Tokens: {output.total_usage}")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+`;
+  const blob = new Blob([script], { type: "text/x-python" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = "workflow.py"; a.click();
+  log("✓ Script Python descargado.");
+}
 
 const provEl = document.getElementById("llmProvider");
 const modelEl = document.getElementById("llmModel");
@@ -244,7 +350,10 @@ document.getElementById("btnImport").onclick = () => {
 
 function afterWorkflowLoaded(msg) {
   layout(); draw();
-  btnRun.disabled = !workflow.steps?.length;
+  const hasSteps = !!workflow.steps?.length;
+  btnRun.disabled = !hasSteps;
+  btnShare.disabled = !hasSteps;
+  btnExportPy.disabled = !hasSteps;
   saveWorkflow();
   if (msg) log(msg);
 }
@@ -290,8 +399,6 @@ function exportJSON() {
 }
 
 // --- run workflow (streaming SSE with fallback) ---
-const btnRun = document.getElementById("btnRun");
-btnRun.onclick = runWorkflow;
 const stepStatus = {}; // step_id -> "running"|"done"
 
 async function runWorkflow() {
@@ -360,17 +467,27 @@ function handleEvent(ev, out, who) {
   } else if (ev.event === "step_done") {
     const card = document.getElementById(`stepcard-${ev.step_id}`);
     if (card) {
-      card.querySelector(".stepstate").textContent = `✓ ${ev.duration}s`;
+      const cost = ev.cost_usd ? ` · $${ev.cost_usd.toFixed(4)}` : "";
+      const tokens = ev.usage?.completion_tokens ? ` · ${ev.usage.completion_tokens} tok` : "";
+      card.querySelector(".stepstate").textContent = `✓ ${ev.duration}s${cost}${tokens}`;
       card.querySelector(".stepstate").style.color = "var(--green)";
       card.style.borderColor = "var(--green)";
       card.querySelector(".stepout").innerHTML = escapeHtml(ev.output).slice(0, 600);
     }
+  } else if (ev.event === "step_skipped") {
+    if (!document.getElementById(`stepcard-${ev.step_id}`)) out.insertAdjacentHTML("beforeend", stepCard(ev.step_id, ev.name));
+    const card = document.getElementById(`stepcard-${ev.step_id}`);
+    card.querySelector(".stepstate").textContent = "⊘ omitido (condición)";
+    card.querySelector(".stepstate").style.color = "var(--muted)";
+    card.style.borderColor = "var(--muted)";
   } else if (ev.event === "done") {
+    const cost = ev.cost_usd ? ` · coste $${ev.cost_usd.toFixed(4)}` : "";
+    const tokens = ev.usage?.completion_tokens ? ` · ${ev.usage.completion_tokens} tokens` : "";
     out.insertAdjacentHTML("beforeend",
-      `<div style="margin-top:10px;color:var(--green)">✓ Completado en ${ev.elapsed}s</div>
+      `<div style="margin-top:10px;color:var(--green)">✓ Completado en ${ev.elapsed}s${cost}${tokens}</div>
        <div style="margin-top:8px;padding:8px;border:1px solid var(--green);border-radius:6px"><b>OUTPUT FINAL:</b>
        <div style="margin-top:4px">${escapeHtml(ev.final_output).replace(/\n/g, "<br>")}</div></div>`);
-    log(`✓ Workflow ejecutado con ${who} (${ev.elapsed}s).`);
+    log(`✓ Workflow ejecutado con ${who} (${ev.elapsed}s${cost}).`);
   } else if (ev.event === "error") {
     out.insertAdjacentHTML("beforeend", `<div style="color:var(--red)">Error: ${escapeHtml(ev.error)}</div>`);
     log("Error: " + ev.error, true);
@@ -436,11 +553,14 @@ function draw() {
       const from = positions[dep]; if (!from) return;
       const x1 = from._x + NODE_W, y1 = from._y + NODE_H / 2;
       const x2 = s._x, y2 = s._y + NODE_H / 2;
-      ctx.strokeStyle = selected === s.id ? "#58a6ff" : "#30363d";
+      const isCond = !!s.condition;
+      ctx.strokeStyle = selected === s.id ? "#58a6ff" : (isCond ? "#d29922" : "#30363d");
       ctx.lineWidth = selected === s.id ? 2 : 1.5;
+      if (isCond) ctx.setLineDash([6, 4]); else ctx.setLineDash([]);
       ctx.beginPath(); ctx.moveTo(x1, y1);
       ctx.bezierCurveTo(x1 + 40, y1, x2 - 40, y2, x2, y2);
       ctx.stroke();
+      ctx.setLineDash([]);
       // arrowhead
       ctx.fillStyle = ctx.strokeStyle;
       ctx.beginPath(); ctx.moveTo(x2, y2); ctx.lineTo(x2 - 9, y2 - 5); ctx.lineTo(x2 - 9, y2 + 5); ctx.fill();
@@ -452,13 +572,13 @@ function draw() {
     ctx.strokeStyle = selected === s.id ? "#58a6ff" : "#30363d";
     ctx.lineWidth = selected === s.id ? 2 : 1;
     roundRect(s._x, s._y, NODE_W, NODE_H, 8); ctx.fill(); ctx.stroke();
-    ctx.fillStyle = "#58a6ff"; ctx.fillRect(s._x, s._y, 4, NODE_H);
+    ctx.fillStyle = s.condition ? "#d29922" : "#58a6ff"; ctx.fillRect(s._x, s._y, 4, NODE_H);
     ctx.fillStyle = "#e6edf3";
     ctx.fillText(clip(s.name || s.id, 22), s._x + 14, s._y + 24);
     ctx.fillStyle = "#8b949e"; ctx.font = "11px 'Segoe UI'";
     ctx.fillText(clip(s.instruction || "", 30), s._x + 14, s._y + 44);
     ctx.fillStyle = "#3fb950";
-    ctx.fillText(s.agent_hint || "assistant", s._x + 14, s._y + 62);
+    ctx.fillText((s.condition ? "ⓒ " : "") + (s.agent_hint || "assistant"), s._x + 14, s._y + 62);
     ctx.font = "13px 'Segoe UI'";
   });
   ctx.restore();
@@ -515,6 +635,10 @@ function openModal(step) {
   document.getElementById("mInstruction").value = step.instruction || "";
   document.getElementById("mRole").value = step.agent_hint || "researcher";
   document.getElementById("mInputs").value = (step.inputs || []).join(", ");
+  const cond = step.condition;
+  document.getElementById("mCondRule").value = cond?.rule || "";
+  document.getElementById("mCondSource").value = cond?.source || (step.inputs || [])[0] || "";
+  document.getElementById("mCondValue").value = cond?.value || "";
   modal.style.display = "flex";
 }
 document.getElementById("mCancel").onclick = () => modal.style.display = "none";
@@ -525,6 +649,13 @@ document.getElementById("mSave").onclick = () => {
   step.agent_hint = document.getElementById("mRole").value;
   const inputs = document.getElementById("mInputs").value.split(",").map(s => s.trim()).filter(Boolean).filter(i => i !== step.id);
   step.inputs = inputs;
+  const rule = document.getElementById("mCondRule").value;
+  if (rule) {
+    const source = document.getElementById("mCondSource").value.trim();
+    if (source && source !== step.id) {
+      step.condition = { source, rule, value: document.getElementById("mCondValue").value };
+    } else step.condition = null;
+  } else step.condition = null;
   modal.style.display = "none"; afterWorkflowLoaded("Nodo actualizado.");
 };
 document.getElementById("mDelete").onclick = () => {

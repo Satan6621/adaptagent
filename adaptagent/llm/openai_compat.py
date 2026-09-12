@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from typing import Any, Callable
@@ -67,6 +68,41 @@ class OpenAICompatLLM(_ProviderBase, LLM):
             "tool_choice": "auto",
         }
 
+    RETRY_STATUS = {429, 500, 502, 503, 504}
+    MAX_RETRIES = 3
+
+    async def _post_with_retry(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """POST /chat/completions with exponential backoff on 429/5xx."""
+        import asyncio as _asyncio
+
+        last_error: Exception | None = None
+        for attempt in range(self.MAX_RETRIES + 1):
+            try:
+                resp = await self.client.post("/chat/completions", json=payload)
+                if resp.status_code in self.RETRY_STATUS and attempt < self.MAX_RETRIES:
+                    wait = float(2**attempt)  # exponential backoff
+                    if resp.headers.get("retry-after"):
+                        try:
+                            wait = max(wait, float(resp.headers["retry-after"]))
+                        except ValueError:
+                            pass
+                    await _asyncio.sleep(wait)
+                    continue
+                resp.raise_for_status()
+                return resp.json()
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code in self.RETRY_STATUS and attempt < self.MAX_RETRIES:
+                    await _asyncio.sleep(2**attempt)
+                    continue
+                raise
+            except (httpx.TransportError, httpx.TimeoutException) as exc:
+                last_error = exc
+                if attempt < self.MAX_RETRIES:
+                    await _asyncio.sleep(2**attempt)
+                    continue
+                raise
+        raise last_error or RuntimeError("unreachable")
+
     async def generate(
         self,
         messages: list[dict[str, str]],
@@ -89,9 +125,7 @@ class OpenAICompatLLM(_ProviderBase, LLM):
         if stream and not tools:
             payload["stream"] = True
             return await self._generate_stream(payload, on_token)
-        resp = await self.client.post("/chat/completions", json=payload)
-        resp.raise_for_status()
-        data = resp.json()
+        data = await self._post_with_retry(payload)
         return self._parse(data)
 
     async def _generate_stream(
@@ -114,7 +148,9 @@ class OpenAICompatLLM(_ProviderBase, LLM):
                     if delta:
                         chunks.append(delta)
                         if on_token:
-                            on_token(delta)
+                            result = on_token(delta)
+                            if asyncio.iscoroutine(result):
+                                await result
         except httpx.HTTPError:
             payload.pop("stream", None)
             resp = await self.client.post("/chat/completions", json=payload)

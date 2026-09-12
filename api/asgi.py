@@ -120,6 +120,66 @@ async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
             "steps": steps,
             "final_output": output.final_output[:6000],
             "elapsed_seconds": elapsed,
+            "cost_usd": round(output.total_cost_usd, 6),
+            "usage": output.total_usage,
+        },
+    )
+
+
+async def _execute_step(payload: dict[str, Any]) -> dict[str, Any]:
+    """Execute ONE step (client-driven orchestration: no serverless time limit).
+
+    payload: {workflow, step_id, step_outputs: {id: output}, provider, model, api_key}
+    -> {output, duration, usage, cost_usd}
+    """
+    wf_data = payload.get("workflow")
+    step_id = (payload.get("step_id") or "").strip()
+    step_outputs = payload.get("step_outputs") or {}
+    if not wf_data or not step_id:
+        return _json(400, {"error": "workflow and step_id are required"})
+    try:
+        graph = WorkflowGraph.from_json(json.dumps(wf_data))
+        graph.topo_order()
+    except KeyError as exc:
+        return _json(400, {"error": f"invalid workflow: missing field {exc}"})
+    except Exception as exc:  # noqa: BLE001
+        return _json(400, {"error": f"invalid workflow: {exc}"})
+    if step_id not in graph.steps:
+        return _json(400, {"error": f"unknown step_id '{step_id}'"})
+    llm, _, error = await _llm_from_payload(payload)
+    if error:
+        return _json(400, {"error": error})
+
+    # validate condition if present
+    step = graph.steps[step_id]
+    cond = step.condition
+    if cond is not None:
+        source_out = step_outputs.get(cond.source, "")
+        if not cond.evaluate(source_out):
+            return _json(200, {"skipped": True, "output": "", "usage": {}, "cost_usd": 0.0})
+
+    # execute (single step, no agent tools on server)
+    manager = AgentManager()
+    manager.register_llm(llm)
+    manager.build_agents_from_workflow(graph, assign_tools=False)
+    from adaptagent.workflow.executor import StepResult
+
+    workflow = Workflow(graph=graph, agent_manager=manager, llm=llm, max_parallel=1)
+    fake_results = {sid: StepResult(step_id=sid, output=out) for sid, out in step_outputs.items()}
+    start = time.time()
+    try:
+        result = await asyncio.wait_for(workflow._run_step(step_id, fake_results, {}), timeout=50.0)
+    except asyncio.TimeoutError:
+        return _json(504, {"error": "step exceeded 50s limit"})
+    elapsed = round(time.time() - start, 1)
+    return _json(
+        200,
+        {
+            "output": result.output[:6000],
+            "duration": elapsed,
+            "usage": result.usage,
+            "cost_usd": round(result.cost_usd, 6),
+            "skipped": False,
         },
     )
 
@@ -145,7 +205,9 @@ class _App:
             try:
                 if path.endswith("/execute/stream"):
                     return await self._stream_execute(payload, send)
-                if path.endswith("/models"):
+                if path.endswith("/step"):
+                    response = await _execute_step(payload)
+                elif path.endswith("/models"):
                     response = await _models(payload)
                 elif path.endswith("/execute"):
                     response = await _execute(payload)

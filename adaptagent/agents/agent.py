@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from ..memory.base import Memory
     from ..tools.base import Tool
 
-SYSTEM_TEMPLATE = """You are {name}, {role}.
+SYSTEM_TEMPLATE = """You are {name}, a {role} agent collaborating in a team.
 
 {instructions}"""
 
@@ -45,6 +45,8 @@ class Agent:
 
     def __post_init__(self) -> None:
         self._conversations: dict[str, list[dict[str, str]]] = {}
+        self.last_usage: dict[str, int] = {}
+        self.last_cost_usd: float = 0.0
 
     @property
     def system_prompt(self) -> str:
@@ -79,6 +81,8 @@ class Agent:
         messages.append({"role": "user", "content": prompt})
         schemas = get_tool_schemas(self.tools) if self.tools else None
         tool_map = {t.name: t for t in self.tools}
+        self.last_usage = {}
+        self.last_cost_usd = 0.0
         iterations = 0
         while True:
             iterations += 1
@@ -88,6 +92,7 @@ class Agent:
             response = await self.llm.generate(
                 messages=self._system_messages() + messages, tools=schemas
             )
+            self._track_usage(response)
             if not response.has_tool_calls:
                 messages.append({"role": "assistant", "content": response.text})
                 if self.memory:
@@ -102,6 +107,24 @@ class Agent:
 
     def run(self, prompt: str, session_id: str = "default") -> str:
         return asyncio.run(self.arun(prompt, session_id))
+
+    def _track_usage(self, response: Any) -> None:
+        """Accumulate tokens and estimated cost of the current arun() call."""
+        try:
+            from ..llm.pricing import estimate_cost, parse_usage
+
+            provider = getattr(getattr(self.llm, "config", None), "provider", "openai")
+            model = getattr(getattr(self.llm, "config", None), "model", "")
+            p_in, p_out = parse_usage(response.usage, provider)
+            prev_in = self.last_usage.get("prompt_tokens", 0)
+            prev_out = self.last_usage.get("completion_tokens", 0)
+            self.last_usage = {
+                "prompt_tokens": prev_in + p_in,
+                "completion_tokens": prev_out + p_out,
+            }
+            self.last_cost_usd += estimate_cost(model, p_in, p_out)
+        except Exception:  # noqa: BLE001
+            pass
 
     async def _execute_tool(self, call: Any, tool_map: dict[str, "Tool"]) -> str:
         tool = tool_map.get(call.name)

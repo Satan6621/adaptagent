@@ -10,6 +10,39 @@ MAX_NODE_NAME_ITER = 100
 
 
 @dataclass
+class Conditional:
+    """Edge condition: route to the step only if the rule passes.
+
+    Rules: contains | not_contains | nonempty | regex
+    """
+
+    source: str  # step id whose output is evaluated
+    rule: str  # contains|not_contains|nonempty|regex
+    value: str = ""  # needle or regex pattern
+
+    def evaluate(self, source_output: str) -> bool:
+        text = source_output or ""
+        if self.rule == "contains":
+            return self.value.lower() in text.lower()
+        if self.rule == "not_contains":
+            return self.value.lower() not in text.lower()
+        if self.rule == "nonempty":
+            return len(text.strip()) > 0
+        if self.rule == "regex":
+            import re
+
+            return re.search(self.value, text) is not None
+        return True
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"source": self.source, "rule": self.rule, "value": self.value}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "Conditional":
+        return cls(source=data["source"], rule=data.get("rule", "nonempty"), value=data.get("value", ""))
+
+
+@dataclass
 class WorkflowStep:
     """A single step in the workflow."""
 
@@ -19,9 +52,12 @@ class WorkflowStep:
     inputs: list[str] = field(default_factory=list)  # upstream node ids
     output: str = "output"
     agent_hint: str | None = None  # e.g. "researcher", "writer"
+    condition: Conditional | None = None  # skip step if the incoming condition fails
+    repeat_until: Conditional | None = None  # loop: re-run step until this passes
+    max_repeats: int = 3  # safety cap for repeat_until loops
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data = {
             "id": self.id,
             "name": self.name,
             "instruction": self.instruction,
@@ -29,9 +65,17 @@ class WorkflowStep:
             "output": self.output,
             "agent_hint": self.agent_hint,
         }
+        if self.condition:
+            data["condition"] = self.condition.to_dict()
+        if self.repeat_until:
+            data["repeat_until"] = self.repeat_until.to_dict()
+            data["max_repeats"] = self.max_repeats
+        return data
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "WorkflowStep":
+        condition = data.get("condition")
+        repeat = data.get("repeat_until")
         return cls(
             id=data["id"],
             name=data["name"],
@@ -39,6 +83,9 @@ class WorkflowStep:
             inputs=list(data.get("inputs", [])),
             output=data.get("output", "output"),
             agent_hint=data.get("agent_hint"),
+            condition=Conditional.from_dict(condition) if condition else None,
+            repeat_until=Conditional.from_dict(repeat) if repeat else None,
+            max_repeats=int(data.get("max_repeats", 3)),
         )
 
 
