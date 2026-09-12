@@ -1,6 +1,10 @@
 {
   "builds": [
-    { "src": "api/asgi.py", "use": "@vercel/python", "config": { "includeFiles": "adaptagent/**" } },
+    {
+      "src": "api/asgi.py",
+      "use": "@vercel/python",
+      "config": { "includeFiles": "adaptagent/**", "maxDuration": 60 }
+    },
     { "src": "public/index.html", "use": "@vercel/static" }
   ],
   "routes": [

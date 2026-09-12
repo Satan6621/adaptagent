@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from .graph import WorkflowGraph
 
@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from ..agents.manager import AgentManager
     from ..hitl.manager import HITLManager
     from ..llm.base import LLM
+
 
 @dataclass
 class StepResult:
@@ -33,7 +34,14 @@ class WorkflowOutput:
 
 
 class Workflow:
-    """Orchestrates execution of a WorkflowGraph with AgentManager agents."""
+    """Orchestrates execution of a WorkflowGraph with AgentManager agents.
+
+    on_event: optional async callback receiving execution events:
+        {"event": "step_start", "step_id", "name"}
+        {"event": "step_done", "step_id", "name", "duration", "output"}
+        {"event": "done", "final_output", "elapsed"}
+        {"event": "error", "error"}
+    """
 
     def __init__(
         self,
@@ -42,16 +50,25 @@ class Workflow:
         llm: "LLM",
         hitl_manager: "HITLManager | None" = None,
         max_parallel: int = 4,
+        on_event: Callable[[dict], Any] | None = None,
     ) -> None:
         self.graph = graph
         self.agent_manager = agent_manager
         self.llm = llm
         self.hitl_manager = hitl_manager
         self.max_parallel = max_parallel
+        self.on_event = on_event
         self._semaphore = asyncio.Semaphore(max_parallel)
+
+    async def _emit(self, event: dict) -> None:
+        if self.on_event is not None:
+            result = self.on_event(event)
+            if asyncio.iscoroutine(result):
+                await result
 
     async def execute(self, inputs: dict[str, str] | None = None) -> WorkflowOutput:
         inputs = inputs or {}
+        start_all = time.perf_counter()
         outputs: dict[str, StepResult] = {}
         order = self.graph.topo_order()
         remaining = list(order)
@@ -73,15 +90,27 @@ class Workflow:
                     if t is task:
                         outputs[sid] = task.result()
                         del pending[sid]
+                        await self._emit(
+                            {
+                                "event": "step_done",
+                                "step_id": sid,
+                                "name": self.graph.steps[sid].name,
+                                "duration": round(outputs[sid].duration, 1),
+                                "output": outputs[sid].output,
+                            }
+                        )
                         break
+        elapsed = time.perf_counter() - start_all
         final_sid = order[-1] if order else None
         final = outputs.get(final_sid).output if final_sid and final_sid in outputs else ""
+        await self._emit({"event": "done", "final_output": final, "elapsed": round(elapsed, 1)})
         return WorkflowOutput(goal=self.graph.goal, results=outputs, final_output=final)
 
     async def _run_step(
         self, step_id: str, outputs: dict[str, StepResult], inputs: dict[str, str]
     ) -> StepResult:
         step = self.graph.steps[step_id]
+        await self._emit({"event": "step_start", "step_id": step_id, "name": step.name})
         async with self._semaphore:
             start = time.perf_counter()
             context_parts = [f"Overall goal: {self.graph.goal}"]

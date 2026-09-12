@@ -166,7 +166,7 @@ class AnthropicLLM(_ProviderBase, LLM):
             role, content = m.get("role"), m.get("content", "")
             if role == "system":
                 continue
-            converted.append({"role": "user" if role == "assistant" else "user", "content": content})
+            converted.append({"role": role if role in ("user", "assistant") else "user", "content": content})
         payload: dict[str, Any] = {
             "model": self.config.model,
             "max_tokens": self.config.max_tokens or 4096,

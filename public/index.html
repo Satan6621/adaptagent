@@ -47,18 +47,23 @@
 <body>
 <header>
   <h1>Adapt<span>Agent</span> Playground</h1>
-  <span style="font-size:12px;color:var(--muted)">genera · edita · exporta workflows de agentes</span>
+  <span style="font-size:12px;color:var(--muted)">genera · edita · ejecuta · evoluciona</span>
   <div class="spacer"></div>
-  <button class="btn" id="btnImport">Importar JSON</button>
+  <button class="btn" id="btnNew" title="Empezar de cero">✕ Nuevo</button>
+  <button class="btn" id="btnImport">Importar</button>
   <button class="btn" id="btnExport">Exportar</button>
-  <button class="btn" id="btnRun" disabled title="Ejecuta el workflow mostrado">▶ Ejecutar</button>
-  <button class="btn primary" id="btnGenerate">⚡ Generar workflow</button>
+  <button class="btn" id="btnRun" disabled title="Ejecuta el workflow mostrado (streaming)">▶ Ejecutar</button>
+  <button class="btn primary" id="btnGenerate">⚡ Generar</button>
 </header>
 <div class="main">
   <div id="sidebar">
     <div class="section">
       <h2>Objetivo</h2>
       <textarea id="goalInput" placeholder="Describe el objetivo del workflow en lenguaje natural...">Research AI agent trends and write an executive summary</textarea>
+    </div>
+    <div class="section">
+      <h2>Plantillas</h2>
+      <div class="chips" id="templateChips"></div>
     </div>
     <div class="section">
       <h2>Configuración LLM</h2>
@@ -127,6 +132,68 @@ const MODELS = {
   anthropic: ["claude-3-5-sonnet-latest", "claude-3-5-haiku-latest"],
 };
 const CFG_KEY = "adaptagent_llm_cfg";
+const WF_KEY = "adaptagent_workflow";
+
+// --- templates (no LLM needed, instantly editable) ---
+const TEMPLATES = {
+  "Resumen ejecutivo": {
+    goal: "Research a topic and produce an executive summary",
+    steps: [
+      { id: "s1", name: "Investigador", instruction: "Investiga el tema dado y extrae los 5 puntos clave con datos concretos.", inputs: [], agent_hint: "researcher" },
+      { id: "s2", name: "Analista", instruction: "Analiza los puntos clave, identifica tendencias y riesgos.", inputs: ["s1"], agent_hint: "analyst" },
+      { id: "s3", name: "Redactor", instruction: "Escribe un resumen ejecutivo de 3 párrafos para dirección.", inputs: ["s2"], agent_hint: "writer" },
+      { id: "s4", name: "Crítico", instruction: "Revisa el resumen, corrige imprecisiones y mejora la claridad. Devuelve la versión final.", inputs: ["s3"], agent_hint: "critic" },
+    ],
+  },
+  "Traducción con revisión": {
+    goal: "Translate a text with quality review",
+    steps: [
+      { id: "s1", name: "Traductor", instruction: "Traduce el texto de entrada al inglés manteniendo el tono.", inputs: [], agent_hint: "writer" },
+      { id: "s2", name: "Revisor", instruction: "Revisa la traducción, corrige errores y naturaliza el lenguaje. Devuelve la traducción final.", inputs: ["s1"], agent_hint: "critic" },
+    ],
+  },
+  "Análisis de sentimiento": {
+    goal: "Analyze sentiment of product reviews",
+    steps: [
+      { id: "s1", name: "Clasificador", instruction: "Clasifica cada reseña como positiva, negativa o neutra con una frase de justificación.", inputs: [], agent_hint: "analyst" },
+      { id: "s2", name: "Estadístico", instruction: "Resume la distribución de sentimientos y extrae 2 recomendaciones de producto.", inputs: ["s1"], agent_hint: "analyst" },
+    ],
+  },
+  "Haiku creativo": {
+    goal: "Write a haiku about any topic",
+    steps: [
+      { id: "s1", name: "Poeta", instruction: "Escribe un haiku (5-7-5) sobre el tema dado, evocador y sin clichés.", inputs: [], agent_hint: "writer" },
+    ],
+  },
+};
+const tplChips = document.getElementById("templateChips");
+Object.keys(TEMPLATES).forEach(name => {
+  const chip = document.createElement("div");
+  chip.className = "chip"; chip.textContent = name;
+  chip.onclick = () => {
+    workflow = JSON.parse(JSON.stringify(TEMPLATES[name]));
+    document.getElementById("goalInput").value = workflow.goal;
+    afterWorkflowLoaded(`Plantilla "${name}" cargada — edítala y ejecútala.`);
+  };
+  tplChips.appendChild(chip);
+});
+
+// --- autosave workflow ---
+function saveWorkflow() { try { localStorage.setItem(WF_KEY, JSON.stringify(workflow)); } catch {} }
+function loadSavedWorkflow() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(WF_KEY) || "null");
+    if (saved?.steps?.length) { workflow = saved; if (saved.goal) document.getElementById("goalInput").value = saved.goal; return true; }
+  } catch {}
+  return false;
+}
+document.getElementById("btnNew").onclick = () => {
+  if (!confirm("¿Empezar un workflow nuevo? Se perderá el actual.")) return;
+  workflow = { goal: "", steps: [] };
+  document.getElementById("goalInput").value = "";
+  afterWorkflowLoaded("Workflow nuevo.");
+};
+
 const provEl = document.getElementById("llmProvider");
 const modelEl = document.getElementById("llmModel");
 const keyEl = document.getElementById("llmKey");
@@ -178,6 +245,7 @@ document.getElementById("btnImport").onclick = () => {
 function afterWorkflowLoaded(msg) {
   layout(); draw();
   btnRun.disabled = !workflow.steps?.length;
+  saveWorkflow();
   if (msg) log(msg);
 }
 
@@ -206,7 +274,7 @@ async function generate() {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || res.statusText);
     workflow = data;
-afterWorkflowLoaded();
+afterWorkflowLoaded(loadSavedWorkflow() ? "Workflow anterior restaurado." : "Listo — elige una plantilla o genera con IA.");
     btnRun.disabled = !workflow.steps?.length;
     log(`✓ Workflow generado (${data.steps.length} pasos) con ${who}.`);
   } catch (e) {
@@ -221,40 +289,112 @@ function exportJSON() {
   log("Workflow exportado.");
 }
 
-// --- run workflow ---
+// --- run workflow (streaming SSE with fallback) ---
 const btnRun = document.getElementById("btnRun");
 btnRun.onclick = runWorkflow;
+const stepStatus = {}; // step_id -> "running"|"done"
+
 async function runWorkflow() {
   if (!workflow.steps?.length) { log("Genera o importa un workflow primero.", true); return; }
   btnRun.disabled = true; btnRun.textContent = "⏳ Ejecutando…";
   const panel = document.getElementById("resultsPanel");
   const out = document.getElementById("runResults");
-  panel.style.display = "block"; out.textContent = "Ejecutando workflow…\n";
+  panel.style.display = "block"; out.innerHTML = "";
   const who = provEl.value ? `${provEl.value}:${modelEl.value}` : "servidor (OpenRouter)";
+  log(`Ejecutando con ${who}…`);
+  let usedFallback = false;
   try {
-    const res = await fetch("/api/execute", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ workflow, ...llmPayload() })
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || res.statusText);
-    let html = "";
-    data.steps.forEach(s => {
-      html += `<div style="margin-bottom:8px;padding:8px;border:1px solid var(--border);border-radius:6px">
-        <div style="color:var(--accent)">▸ ${s.name} <span style="color:var(--muted)">(${s.duration}s)</span></div>
-        <div style="color:var(--muted);margin-top:4px">${(s.output || "").slice(0, 400).replace(/</g, "&lt;")}</div></div>`;
-    });
-    html += `<div style="margin-top:10px;color:var(--green)">✓ Completado en ${data.elapsed_seconds}s</div>`;
-    html += `<div style="margin-top:8px;padding:8px;border:1px solid var(--green);border-radius:6px"><b>OUTPUT FINAL:</b>
-      <div style="margin-top:4px">${(data.final_output || "").replace(/</g, "&lt;").replace(/\n/g, "<br>")}</div></div>`;
-    out.innerHTML = html;
-    log(`✓ Workflow ejecutado (${data.steps.length} pasos, ${data.elapsed_seconds}s) con ${who}.`);
+    // try SSE streaming first
+    await runStreaming(out, who);
   } catch (e) {
-    out.textContent = "Error: " + e.message;
-    log("Error ejecutando: " + e.message, true);
-  } finally {
-    btnRun.disabled = false; btnRun.textContent = "▶ Ejecutar";
+    if (String(e.message).includes("stream")) { log("Streaming no disponible, usando modo clásico…"); }
+    usedFallback = true;
   }
+  if (usedFallback) {
+    try { await runClassic(out, who); }
+    catch (e) { out.textContent = "Error: " + e.message; log("Error ejecutando: " + e.message, true); }
+  }
+  btnRun.disabled = false; btnRun.textContent = "▶ Ejecutar";
+}
+
+function stepCard(id, name) {
+  return `<div id="stepcard-${id}" style="margin-bottom:8px;padding:8px;border:1px solid var(--border);border-radius:6px">
+    <div style="color:var(--accent)">▸ ${name} <span class="stepstate" style="color:var(--muted)">…</span></div>
+    <div class="stepout" style="color:var(--muted);margin-top:4px"></div></div>`;
+}
+function escapeHtml(s) { return (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+
+async function runStreaming(out, who) {
+  const res = await fetch("/api/execute/stream", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ workflow, ...llmPayload() })
+  });
+  if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || res.statusText); }
+  if (!res.body) throw new Error("no stream support");
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "", sawAny = false;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buffer.indexOf("\n\n")) >= 0) {
+      const chunk = buffer.slice(0, idx); buffer = buffer.slice(idx + 2);
+      if (!chunk.startsWith("data:")) continue;
+      try { handleEvent(JSON.parse(chunk.slice(5).trim()), out, who); sawAny = true; }
+      catch {}
+    }
+  }
+  if (!sawAny) throw new Error("stream empty");
+}
+
+function handleEvent(ev, out, who) {
+  if (ev.event === "step_start") {
+    if (!document.getElementById(`stepcard-${ev.step_id}`)) out.insertAdjacentHTML("beforeend", stepCard(ev.step_id, ev.name));
+    const card = document.getElementById(`stepcard-${ev.step_id}`);
+    card.querySelector(".stepstate").textContent = "⟳ ejecutando…";
+    card.querySelector(".stepstate").style.color = "var(--accent)";
+    card.style.borderColor = "var(--accent)";
+    card.scrollIntoView({ block: "nearest" });
+  } else if (ev.event === "step_done") {
+    const card = document.getElementById(`stepcard-${ev.step_id}`);
+    if (card) {
+      card.querySelector(".stepstate").textContent = `✓ ${ev.duration}s`;
+      card.querySelector(".stepstate").style.color = "var(--green)";
+      card.style.borderColor = "var(--green)";
+      card.querySelector(".stepout").innerHTML = escapeHtml(ev.output).slice(0, 600);
+    }
+  } else if (ev.event === "done") {
+    out.insertAdjacentHTML("beforeend",
+      `<div style="margin-top:10px;color:var(--green)">✓ Completado en ${ev.elapsed}s</div>
+       <div style="margin-top:8px;padding:8px;border:1px solid var(--green);border-radius:6px"><b>OUTPUT FINAL:</b>
+       <div style="margin-top:4px">${escapeHtml(ev.final_output).replace(/\n/g, "<br>")}</div></div>`);
+    log(`✓ Workflow ejecutado con ${who} (${ev.elapsed}s).`);
+  } else if (ev.event === "error") {
+    out.insertAdjacentHTML("beforeend", `<div style="color:var(--red)">Error: ${escapeHtml(ev.error)}</div>`);
+    log("Error: " + ev.error, true);
+  }
+}
+
+async function runClassic(out, who) {
+  const res = await fetch("/api/execute", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ workflow, ...llmPayload() })
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  data.steps.forEach(s => {
+    out.insertAdjacentHTML("beforeend",
+      `<div style="margin-bottom:8px;padding:8px;border:1px solid var(--green);border-radius:6px">
+        <div style="color:var(--accent)">▸ ${s.name} <span style="color:var(--green)">✓ ${s.duration}s</span></div>
+        <div style="color:var(--muted);margin-top:4px">${escapeHtml(s.output).slice(0, 600)}</div></div>`);
+  });
+  out.insertAdjacentHTML("beforeend",
+    `<div style="margin-top:10px;color:var(--green)">✓ Completado en ${data.elapsed_seconds}s</div>
+     <div style="margin-top:8px;padding:8px;border:1px solid var(--green);border-radius:6px"><b>OUTPUT FINAL:</b>
+     <div style="margin-top:4px">${escapeHtml(data.final_output).replace(/\n/g, "<br>")}</div></div>`);
+  log(`✓ Workflow ejecutado (${data.steps.length} pasos, ${data.elapsed_seconds}s) con ${who}.`);
 }
 
 // --- layout: assign positions by topological levels ---
