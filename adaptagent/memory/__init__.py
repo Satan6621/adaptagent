@@ -1,4 +1,3 @@
-from .base import Memory
-from .simple import InMemoryStore, FileMemoryStore
+from .base import FileMemoryStore, InMemoryStore, Memory
 
 __all__ = ["Memory", "InMemoryStore", "FileMemoryStore"]

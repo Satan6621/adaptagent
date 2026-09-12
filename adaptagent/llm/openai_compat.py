@@ -2,15 +2,15 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Callable, Generator, Iterable
+from typing import Any, Callable
 
 import httpx
 
 from .base import (
     DEFAULT_BASE_URLS,
     ENV_KEYS,
-    PROVIDER_ALIASES,
     LLM,
+    PROVIDER_ALIASES,
     LLMConfig,
     LLMResponse,
     ToolCall,

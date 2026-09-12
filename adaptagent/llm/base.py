@@ -8,12 +8,8 @@ through its Messages API. No heavyweight SDKs are required.
 from __future__ import annotations
 
 import json
-import os
-import re
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterable, Protocol, runtime_checkable
-
-import httpx
+from typing import Any, Callable, Protocol, runtime_checkable
 
 from ..config import _load_env_file
 

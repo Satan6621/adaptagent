@@ -4,18 +4,16 @@ import asyncio
 import json
 
 import pytest
-
 from conftest import FakeLLM, make_graph
 
 from adaptagent.agents import Agent, AgentManager
-from adaptagent.evolution import EvolutionEngine, Evaluator, LLMJudgeEvaluator
+from adaptagent.evolution import Evaluator, EvolutionEngine
 from adaptagent.hitl import HITLManager
-from adaptagent.llm.base import LLMConfig, LLMResponse, ToolCall
+from adaptagent.llm.base import LLMConfig
 from adaptagent.llm.schemas import get_tool_schema
-from adaptagent.memory import InMemoryStore, FileMemoryStore
-from adaptagent.tools import Tool, file_write, python_repl
+from adaptagent.memory import FileMemoryStore, InMemoryStore
+from adaptagent.tools import file_write, python_repl
 from adaptagent.workflow import Workflow, WorkflowGenerator, WorkflowGraph, WorkflowStep
-
 
 # ---------- graph ----------
 
@@ -109,9 +107,10 @@ def test_python_repl_blocks_import_os():
 def test_file_tools_confined_to_workspace(tmp_path, monkeypatch):
     monkeypatch.setenv("ADAPTAGENT_WORKSPACE", str(tmp_path))
     import importlib
+
     import adaptagent.tools.files as files_mod
     importlib.reload(files_mod)
-    from adaptagent.tools import file_read, file_list, file_write
+    from adaptagent.tools import file_list, file_read
     assert "wrote" in file_write("sub/test.txt", "hello").lower()
     assert file_read("sub/test.txt") == "hello"
     assert "test.txt" in file_list("sub")

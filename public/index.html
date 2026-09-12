@@ -51,6 +51,7 @@
   <div class="spacer"></div>
   <button class="btn" id="btnImport">Importar JSON</button>
   <button class="btn" id="btnExport">Exportar</button>
+  <button class="btn" id="btnRun" disabled title="Ejecuta el workflow mostrado">▶ Ejecutar</button>
   <button class="btn primary" id="btnGenerate">⚡ Generar workflow</button>
 </header>
 <div class="main">
@@ -81,6 +82,10 @@
     <div class="section" style="flex:1;border-bottom:none">
       <h2>Estado</h2>
       <div class="status" id="status">Listo. Escribe un objetivo y pulsa "Generar workflow".</div>
+    </div>
+    <div class="section" id="resultsPanel" style="display:none;flex:1;overflow-y:auto;border-bottom:none">
+      <h2>Ejecución</h2>
+      <div id="runResults" style="font-size:12px;font-family:var(--mono);white-space:pre-wrap"></div>
     </div>
   </div>
   <div id="canvasWrap">
@@ -166,9 +171,15 @@ document.getElementById("btnExport").onclick = exportJSON;
 document.getElementById("btnImport").onclick = () => {
   const txt = prompt("Pega el JSON del workflow:");
   if (!txt) return;
-  try { workflow = JSON.parse(txt); layout(); draw(); log("Workflow importado."); }
+  try { workflow = JSON.parse(txt); afterWorkflowLoaded("Workflow importado."); }
   catch (e) { log("JSON inválido: " + e.message, true); }
 };
+
+function afterWorkflowLoaded(msg) {
+  layout(); draw();
+  btnRun.disabled = !workflow.steps?.length;
+  if (msg) log(msg);
+}
 
 const chipsEl = document.getElementById("toolChips");
 TOOLS.forEach(t => {
@@ -195,7 +206,8 @@ async function generate() {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || res.statusText);
     workflow = data;
-    layout(); draw();
+afterWorkflowLoaded();
+    btnRun.disabled = !workflow.steps?.length;
     log(`✓ Workflow generado (${data.steps.length} pasos) con ${who}.`);
   } catch (e) {
     log("Error: " + e.message, true);
@@ -207,6 +219,42 @@ function exportJSON() {
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob); a.download = "workflow.json"; a.click();
   log("Workflow exportado.");
+}
+
+// --- run workflow ---
+const btnRun = document.getElementById("btnRun");
+btnRun.onclick = runWorkflow;
+async function runWorkflow() {
+  if (!workflow.steps?.length) { log("Genera o importa un workflow primero.", true); return; }
+  btnRun.disabled = true; btnRun.textContent = "⏳ Ejecutando…";
+  const panel = document.getElementById("resultsPanel");
+  const out = document.getElementById("runResults");
+  panel.style.display = "block"; out.textContent = "Ejecutando workflow…\n";
+  const who = provEl.value ? `${provEl.value}:${modelEl.value}` : "servidor (OpenRouter)";
+  try {
+    const res = await fetch("/api/execute", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workflow, ...llmPayload() })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    let html = "";
+    data.steps.forEach(s => {
+      html += `<div style="margin-bottom:8px;padding:8px;border:1px solid var(--border);border-radius:6px">
+        <div style="color:var(--accent)">▸ ${s.name} <span style="color:var(--muted)">(${s.duration}s)</span></div>
+        <div style="color:var(--muted);margin-top:4px">${(s.output || "").slice(0, 400).replace(/</g, "&lt;")}</div></div>`;
+    });
+    html += `<div style="margin-top:10px;color:var(--green)">✓ Completado en ${data.elapsed_seconds}s</div>`;
+    html += `<div style="margin-top:8px;padding:8px;border:1px solid var(--green);border-radius:6px"><b>OUTPUT FINAL:</b>
+      <div style="margin-top:4px">${(data.final_output || "").replace(/</g, "&lt;").replace(/\n/g, "<br>")}</div></div>`;
+    out.innerHTML = html;
+    log(`✓ Workflow ejecutado (${data.steps.length} pasos, ${data.elapsed_seconds}s) con ${who}.`);
+  } catch (e) {
+    out.textContent = "Error: " + e.message;
+    log("Error ejecutando: " + e.message, true);
+  } finally {
+    btnRun.disabled = false; btnRun.textContent = "▶ Ejecutar";
+  }
 }
 
 // --- layout: assign positions by topological levels ---
@@ -337,12 +385,12 @@ document.getElementById("mSave").onclick = () => {
   step.agent_hint = document.getElementById("mRole").value;
   const inputs = document.getElementById("mInputs").value.split(",").map(s => s.trim()).filter(Boolean).filter(i => i !== step.id);
   step.inputs = inputs;
-  modal.style.display = "none"; layout(); draw(); log("Nodo actualizado.");
+  modal.style.display = "none"; afterWorkflowLoaded("Nodo actualizado.");
 };
 document.getElementById("mDelete").onclick = () => {
   workflow.steps = workflow.steps.filter(s => s.id !== modalId);
   workflow.steps.forEach(s => s.inputs = (s.inputs || []).filter(i => i !== modalId));
-  modal.style.display = "none"; layout(); draw(); log("Nodo eliminado.");
+  modal.style.display = "none"; afterWorkflowLoaded("Nodo eliminado.");
 };
 
 function log(msg, isErr = false) {

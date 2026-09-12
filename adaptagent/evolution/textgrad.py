@@ -77,12 +77,12 @@ class TextGradOptimizer:
         graph: "WorkflowGraph",
         agent_manager: "AgentManager",
         llm: "LLM",
-        evaluator: "Evaluator | None" = None,
+        evaluator: "Evaluator | None" = None,  # noqa: F821
     ) -> None:
         self.graph = graph
         self.agent_manager = agent_manager
         self.llm = llm
-        from .evaluator import Evaluator, LLMJudgeEvaluator
+        from .evaluator import Evaluator, LLMJudgeEvaluator  # noqa: F401 (Evaluator for type checkers)
 
         self.evaluator = evaluator or LLMJudgeEvaluator(llm)
 

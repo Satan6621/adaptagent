@@ -52,6 +52,61 @@ async def _models(payload: dict[str, Any]) -> dict[str, Any]:
     return _json(200, {"models": DEFAULT_MODELS.get(provider, [])})
 
 
+async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
+    """Execute a full workflow (existing JSON or generated from goal)."""
+    import time
+
+    from adaptagent import AgentManager, Workflow
+    from adaptagent.workflow import WorkflowGraph
+
+    # workflow comes as {"goal": ..., "steps": [...]} (same schema as _generate output)
+    wf_data = payload.get("workflow")
+    goal = (payload.get("goal") or (wf_data or {}).get("goal") or "").strip()
+    if not wf_data:
+        if not goal:
+            return _json(400, {"error": "workflow or goal is required"})
+        config = _resolve_client_config(payload)
+        if not config.api_key and config.provider not in SERVER_PROVIDERS:
+            return _json(400, {"error": f"api_key is required for provider '{config.provider}'"})
+        llm = resolve_llm(config)
+        wf_data = json.loads((await WorkflowGenerator(llm).generate_workflow(goal)).to_json())
+    try:
+        graph = WorkflowGraph.from_json(json.dumps(wf_data))
+    except Exception as exc:  # noqa: BLE001
+        return _json(400, {"error": f"invalid workflow: {exc}"})
+
+    config = _resolve_client_config(payload)
+    if not config.api_key and config.provider not in SERVER_PROVIDERS:
+        return _json(400, {"error": f"api_key is required for provider '{config.provider}'"})
+    llm = resolve_llm(config)
+    manager = AgentManager()
+    manager.register_llm(llm)
+    manager.build_agents_from_workflow(graph, assign_tools=False)
+
+    start = time.time()
+    workflow = Workflow(graph=graph, agent_manager=manager, llm=llm, max_parallel=2)
+    output = await workflow.execute()
+    elapsed = round(time.time() - start, 1)
+    steps = [
+        {
+            "id": sid,
+            "name": graph.steps[sid].name,
+            "output": result.output[:2000],
+            "duration": round(result.duration, 1),
+        }
+        for sid, result in output.results.items()
+    ]
+    return _json(
+        200,
+        {
+            "goal": graph.goal,
+            "steps": steps,
+            "final_output": output.final_output[:6000],
+            "elapsed_seconds": elapsed,
+        },
+    )
+
+
 class _App:
     """ASGI entrypoint for the Vercel Python runtime."""
 
@@ -73,6 +128,8 @@ class _App:
             try:
                 if path.endswith("/models"):
                     response = await _models(payload)
+                elif path.endswith("/execute"):
+                    response = await _execute(payload)
                 else:
                     response = await _generate(payload)
             except Exception as exc:  # noqa: BLE001

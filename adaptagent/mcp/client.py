@@ -12,8 +12,8 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from ..tools.base import Tool
 from ..llm.schemas import get_tool_schema
+from ..tools.base import Tool
 
 INITIALIZE_PARAMS = {
     "protocolVersion": "2024-11-05",

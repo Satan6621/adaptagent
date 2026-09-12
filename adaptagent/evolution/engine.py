@@ -14,7 +14,6 @@ from typing import TYPE_CHECKING
 
 from ..agents.agent import Agent
 from ..workflow.executor import Workflow
-from ..workflow.generator import _extract_json
 from .evaluator import Evaluator, LLMJudgeEvaluator
 
 if TYPE_CHECKING:
@@ -153,7 +152,6 @@ class EvolutionEngine:
 
     async def _evaluate_candidate(self, cand: _Candidate, goal: str, target_step) -> None:
         """Run the workflow with the candidate's instruction and score it."""
-        original = self.agent_manager.agents.get(self._key(target_step))
         key = self._key(target_step)
         real_agent = self.agent_manager.agents.get(key)
         if real_agent is None:

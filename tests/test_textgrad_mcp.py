@@ -1,18 +1,15 @@
 """Tests for TextGrad optimizer and MCP client (fake stdio server)."""
 
 import asyncio
-import json
-import os
 import sys
 import textwrap
 
 import pytest
-
 from conftest import FakeLLM, make_graph
 
 from adaptagent.agents import AgentManager
 from adaptagent.evolution import Evaluator, TextGradOptimizer
-from adaptagent.mcp.client import MCPClient, mcp_tool_from_spec, get_tool_schemas_for
+from adaptagent.mcp.client import MCPClient, get_tool_schemas_for, mcp_tool_from_spec
 
 # ---------- TextGrad ----------
 

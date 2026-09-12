@@ -6,6 +6,7 @@ Evolution is a first-class citizen: any Workflow can be optimized in place.
 """
 
 from .aflow import AFlowEngine, AFlowResult
+from .benchmark import Benchmark, BenchmarkCase, BenchmarkResult
 from .engine import EvolutionEngine, EvolutionResult
 from .evaluator import Evaluator, LLMJudgeEvaluator
 from .textgrad import TextGradOptimizer, TextGradResult
@@ -13,6 +14,9 @@ from .textgrad import TextGradOptimizer, TextGradResult
 __all__ = [
     "AFlowEngine",
     "AFlowResult",
+    "Benchmark",
+    "BenchmarkCase",
+    "BenchmarkResult",
     "EvolutionEngine",
     "EvolutionResult",
     "Evaluator",

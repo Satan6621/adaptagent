@@ -2,16 +2,12 @@
 
 import asyncio
 import json
-import os
 
 import pytest
-
 from conftest import FakeLLM, make_graph
 
 from adaptagent.agents import AgentManager
 from adaptagent.evolution import AFlowEngine, Evaluator
-from adaptagent.workflow import WorkflowGraph, WorkflowStep
-
 
 # ---------- AFlow ----------
 

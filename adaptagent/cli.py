@@ -48,7 +48,7 @@ def _resolve_tools(names: list[str] | None):
     return [catalog[n]() for n in (names or []) if n in catalog]
 
 
-async def _connect_mcp(mcp_specs: list[str]) -> "tuple[MCPClient, list]":
+async def _connect_mcp(mcp_specs: list[str]) -> tuple["MCPClient", list]:  # noqa: F821
     """Parse --mcp specs like 'python:server.py' or 'npx:-y:@modelcontextprotocol/server-everything'."""
     from adaptagent.mcp import MCPClient
 

@@ -10,8 +10,8 @@ from .base import Tool, tool
 
 
 def _run_code(code: str, result_queue) -> None:  # type: ignore[valid-type]
-    import io
     import contextlib
+    import io
 
     captured = io.StringIO()
     allowed_builtins = {
@@ -22,11 +22,11 @@ def _run_code(code: str, result_queue) -> None:  # type: ignore[valid-type]
         "str": str, "sum": sum, "tuple": tuple, "type": type, "zip": zip, "True": True, "False": False,
         "None": None,
     }
+    import datetime as _datetime
+    import json as _json
     import math as _math
     import random as _random
-    import json as _json
     import statistics as _statistics
-    import datetime as _datetime
     modules = {
         "math": _math, "random": _random, "json": _json,
         "statistics": _statistics, "datetime": _datetime,
