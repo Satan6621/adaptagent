@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AdaptAgent Playground</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --border: #30363d; --text: #e6edf3;
+    --muted: #8b949e; --accent: #58a6ff; --green: #3fb950; --red: #f85149;
+    --node: #1c2128; --font: 'Segoe UI', system-ui, sans-serif; --mono: 'Cascadia Code', Consolas, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: var(--font); height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+  header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--border); }
+  header h1 { font-size: 15px; font-weight: 600; }
+  header h1 span { color: var(--accent); }
+  header .spacer { flex: 1; }
+  .btn { background: #21262d; border: 1px solid var(--border); color: var(--text); padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 13px; transition: background .15s; }
+  .btn:hover { background: #30363d; }
+  .btn.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+  .btn.primary:hover { background: #388bfd; }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .main { flex: 1; display: flex; overflow: hidden; }
+  #sidebar { width: 320px; background: var(--panel); border-right: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; }
+  .section { padding: 14px; border-bottom: 1px solid var(--border); }
+  .section h2 { font-size: 12px; text-transform: uppercase; color: var(--muted); margin-bottom: 10px; letter-spacing: .5px; }
+  textarea, input[type=text] { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 8px; font-size: 13px; font-family: var(--mono); resize: vertical; }
+  textarea:focus, input:focus { outline: none; border-color: var(--accent); }
+  #goalInput { height: 70px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .chip { padding: 3px 10px; border-radius: 12px; border: 1px solid var(--border); background: var(--bg); color: var(--muted); font-size: 11px; cursor: pointer; user-select: none; }
+  .chip.on { border-color: var(--accent); color: var(--accent); background: rgba(88,166,255,.1); }
+  .status { font-size: 12px; color: var(--muted); padding: 10px 14px; flex: 1; overflow-y: auto; font-family: var(--mono); }
+  .status.error { color: var(--red); }
+  #canvasWrap { flex: 1; position: relative; overflow: auto; }
+  canvas { display: block; }
+  .hint { position: absolute; top: 12px; left: 12px; font-size: 11px; color: var(--muted); background: rgba(13,17,23,.85); padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border); pointer-events: none; }
+  #nodeModal { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: none; align-items: center; justify-content: center; z-index: 10; }
+  #nodeModal .card { width: 440px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 18px; }
+  #nodeModal h3 { font-size: 14px; margin-bottom: 12px; }
+  #nodeModal label { display: block; font-size: 11px; color: var(--muted); margin: 10px 0 4px; text-transform: uppercase; letter-spacing: .5px; }
+  #nodeModal .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+  select { width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 6px; border-radius: 6px; font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Adapt<span>Agent</span> Playground</h1>
+  <span style="font-size:12px;color:var(--muted)">genera · edita · exporta workflows de agentes</span>
+  <div class="spacer"></div>
+  <button class="btn" id="btnImport">Importar JSON</button>
+  <button class="btn" id="btnExport">Exportar</button>
+  <button class="btn primary" id="btnGenerate">⚡ Generar workflow</button>
+</header>
+<div class="main">
+  <div id="sidebar">
+    <div class="section">
+      <h2>Objetivo</h2>
+      <textarea id="goalInput" placeholder="Describe el objetivo del workflow en lenguaje natural...">Research AI agent trends and write an executive summary</textarea>
+    </div>
+    <div class="section">
+      <h2>Herramientas</h2>
+      <div class="chips" id="toolChips"></div>
+    </div>
+    <div class="section">
+      <h2>Estado</h2>
+      <div class="status" id="status">Listo. Escribe un objetivo y pulsa "Generar workflow".</div>
+    </div>
+  </div>
+  <div id="canvasWrap">
+    <canvas id="canvas" width="2000" height="1400"></canvas>
+    <div class="hint">doble clic: editar nodo · clic: seleccionar · arrastrar fondo: pan · rueda: zoom</div>
+  </div>
+</div>
+<div id="nodeModal">
+  <div class="card">
+    <h3 id="modalTitle">Editar nodo</h3>
+    <label>Nombre</label><input type="text" id="mName">
+    <label>Instrucción</label><textarea id="mInstruction" rows="4"></textarea>
+    <label>Rol (agent_hint)</label>
+    <select id="mRole">
+      <option>researcher</option><option>writer</option><option>coder</option>
+      <option>analyst</option><option>critic</option><option>reviewer</option>
+    </select>
+    <label>Dependencias (ids separados por coma)</label><input type="text" id="mInputs" placeholder="step1, step2">
+    <div class="row">
+      <button class="btn" id="mDelete">Eliminar nodo</button>
+      <button class="btn" id="mCancel">Cancelar</button>
+      <button class="btn primary" id="mSave">Guardar</button>
+    </div>
+  </div>
+</div>
+<script>
+const TOOLS = ["wiki","search","python","http","read","write"];
+let workflow = { goal: "", steps: [] };
+let selected = null, scale = 1, panX = 0, panY = 0, dragging = null, modalId = null;
+
+const canvas = document.getElementById("canvas"), ctx = canvas.getContext("2d");
+const NODE_W = 190, NODE_H = 74, GAP = 90;
+
+// --- toolbar ---
+document.getElementById("btnGenerate").onclick = generate;
+document.getElementById("btnExport").onclick = exportJSON;
+document.getElementById("btnImport").onclick = () => {
+  const txt = prompt("Pega el JSON del workflow:");
+  if (!txt) return;
+  try { workflow = JSON.parse(txt); layout(); draw(); log("Workflow importado."); }
+  catch (e) { log("JSON inválido: " + e.message, true); }
+};
+
+const chipsEl = document.getElementById("toolChips");
+TOOLS.forEach(t => {
+  const chip = document.createElement("div");
+  chip.className = "chip"; chip.textContent = t; chip.dataset.tool = t;
+  chip.onclick = () => chip.classList.toggle("on");
+  chipsEl.appendChild(chip);
+});
+
+function selectedTools() { return [...document.querySelectorAll(".chip.on")].map(c => c.dataset.tool); }
+
+async function generate() {
+  const goal = document.getElementById("goalInput").value.trim();
+  if (!goal) { log("Escribe un objetivo primero.", true); return; }
+  const btn = document.getElementById("btnGenerate");
+  btn.disabled = true; log("Generando workflow…");
+  try {
+    const res = await fetch("/api/generate", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal, tools: selectedTools() })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    workflow = data;
+    layout(); draw();
+    log(`✓ Workflow generado: ${data.steps.length} pasos.`);
+  } catch (e) {
+    log("Error: " + e.message + " — (sin API key configurada en Vercel, importa un JSON manualmente)", true);
+  } finally { btn.disabled = false; }
+}
+
+function exportJSON() {
+  const blob = new Blob([JSON.stringify(workflow, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = "workflow.json"; a.click();
+  log("Workflow exportado.");
+}
+
+// --- layout: assign positions by topological levels ---
+function layout() {
+  const levels = {};
+  function level(id, seen = new Set()) {
+    if (levels[id] !== undefined) return levels[id];
+    if (seen.has(id)) return 0; seen.add(id);
+    const step = workflow.steps.find(s => s.id === id);
+    if (!step || !step.inputs?.length) return levels[id] = 0;
+    return levels[id] = Math.max(...step.inputs.map(i => level(i, seen))) + 1;
+  }
+  workflow.steps.forEach(s => level(s.id));
+  const byLevel = {};
+  workflow.steps.forEach(s => { (byLevel[levels[s.id]] ??= []).push(s); });
+  Object.entries(byLevel).forEach(([lvl, steps]) => {
+    steps.forEach((s, i) => {
+      s._x = 60 + lvl * (NODE_W + GAP);
+      s._y = 60 + i * (NODE_H + 40) + (maxLevelHeight(byLevel, lvl) - steps.length * (NODE_H + 40)) / 2;
+    });
+  });
+  function maxLevelHeight(byL, lvl) {
+    return Math.max(...Object.entries(byL).map(([l, ss]) => ss.length * (NODE_H + 40)));
+  }
+}
+
+// --- drawing ---
+function draw() {
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = "#0d1117"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.translate(panX, panY); ctx.scale(scale, scale);
+  ctx.font = "13px 'Segoe UI'";
+
+  const positions = Object.fromEntries(workflow.steps.map(s => [s.id, s]));
+  // edges
+  workflow.steps.forEach(s => {
+    (s.inputs || []).forEach(dep => {
+      const from = positions[dep]; if (!from) return;
+      const x1 = from._x + NODE_W, y1 = from._y + NODE_H / 2;
+      const x2 = s._x, y2 = s._y + NODE_H / 2;
+      ctx.strokeStyle = selected === s.id ? "#58a6ff" : "#30363d";
+      ctx.lineWidth = selected === s.id ? 2 : 1.5;
+      ctx.beginPath(); ctx.moveTo(x1, y1);
+      ctx.bezierCurveTo(x1 + 40, y1, x2 - 40, y2, x2, y2);
+      ctx.stroke();
+      // arrowhead
+      ctx.fillStyle = ctx.strokeStyle;
+      ctx.beginPath(); ctx.moveTo(x2, y2); ctx.lineTo(x2 - 9, y2 - 5); ctx.lineTo(x2 - 9, y2 + 5); ctx.fill();
+    });
+  });
+  // nodes
+  workflow.steps.forEach(s => {
+    ctx.fillStyle = "#1c2128";
+    ctx.strokeStyle = selected === s.id ? "#58a6ff" : "#30363d";
+    ctx.lineWidth = selected === s.id ? 2 : 1;
+    roundRect(s._x, s._y, NODE_W, NODE_H, 8); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "#58a6ff"; ctx.fillRect(s._x, s._y, 4, NODE_H);
+    ctx.fillStyle = "#e6edf3";
+    ctx.fillText(clip(s.name || s.id, 22), s._x + 14, s._y + 24);
+    ctx.fillStyle = "#8b949e"; ctx.font = "11px 'Segoe UI'";
+    ctx.fillText(clip(s.instruction || "", 30), s._x + 14, s._y + 44);
+    ctx.fillStyle = "#3fb950";
+    ctx.fillText(s.agent_hint || "assistant", s._x + 14, s._y + 62);
+    ctx.font = "13px 'Segoe UI'";
+  });
+  ctx.restore();
+}
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath(); ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+function clip(t, n) { t = String(t); return t.length > n ? t.slice(0, n - 1) + "…" : t; }
+
+// --- interaction ---
+function nodeAt(x, y) {
+  return workflow.steps.find(s => x >= s._x && x <= s._x + NODE_W && y >= s._y && y <= s._y + NODE_H);
+}
+canvas.addEventListener("mousedown", e => {
+  const { x, y } = toWorld(e);
+  const node = nodeAt(x, y);
+  dragging = node ? { node, dx: x - node._x, dy: y - node._y, moved: false } : { pan: true, sx: e.clientX, sy: e.clientY, ox: panX, oy: panY };
+});
+canvas.addEventListener("mousemove", e => {
+  if (!dragging) return;
+  if (dragging.node) {
+    dragging.moved = true;
+    dragging.node._x = toWorld(e).x - dragging.dx; dragging.node._y = toWorld(e).y - dragging.dy; draw();
+  } else if (dragging.pan) {
+    panX = dragging.ox + (e.clientX - dragging.sx); panY = dragging.oy + (e.clientY - dragging.sy); draw();
+  }
+});
+canvas.addEventListener("mouseup", () => {
+  if (dragging?.node && !dragging.moved) { selected = dragging.node.id; draw(); }
+  dragging = null;
+});
+canvas.addEventListener("dblclick", e => {
+  const node = nodeAt(...Object.values(toWorld(e)));
+  if (node) openModal(node);
+});
+canvas.addEventListener("wheel", e => {
+  e.preventDefault();
+  const factor = e.deltaY < 0 ? 1.1 : 0.9;
+  scale = Math.min(3, Math.max(0.3, scale * factor)); draw();
+}, { passive: false });
+function toWorld(e) {
+  const r = canvas.getBoundingClientRect();
+  return { x: (e.clientX - r.left - panX) / scale, y: (e.clientY - r.top - panY) / scale };
+}
+
+// --- node modal ---
+const modal = document.getElementById("nodeModal");
+function openModal(step) {
+  modalId = step.id;
+  document.getElementById("modalTitle").textContent = `Editar "${step.name || step.id}"`;
+  document.getElementById("mName").value = step.name || "";
+  document.getElementById("mInstruction").value = step.instruction || "";
+  document.getElementById("mRole").value = step.agent_hint || "researcher";
+  document.getElementById("mInputs").value = (step.inputs || []).join(", ");
+  modal.style.display = "flex";
+}
+document.getElementById("mCancel").onclick = () => modal.style.display = "none";
+document.getElementById("mSave").onclick = () => {
+  const step = workflow.steps.find(s => s.id === modalId); if (!step) return;
+  step.name = document.getElementById("mName").value.trim() || step.name;
+  step.instruction = document.getElementById("mInstruction").value.trim();
+  step.agent_hint = document.getElementById("mRole").value;
+  const inputs = document.getElementById("mInputs").value.split(",").map(s => s.trim()).filter(Boolean).filter(i => i !== step.id);
+  step.inputs = inputs;
+  modal.style.display = "none"; layout(); draw(); log("Nodo actualizado.");
+};
+document.getElementById("mDelete").onclick = () => {
+  workflow.steps = workflow.steps.filter(s => s.id !== modalId);
+  workflow.steps.forEach(s => s.inputs = (s.inputs || []).filter(i => i !== modalId));
+  modal.style.display = "none"; layout(); draw(); log("Nodo eliminado.");
+};
+
+function log(msg, isErr = false) {
+  const el = document.getElementById("status");
+  el.className = "status" + (isErr ? " error" : "");
+  el.textContent = msg;
+}
+layout(); draw();
+</script>
+</body>
+</html>
