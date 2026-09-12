@@ -60,10 +60,25 @@
       <textarea id="goalInput" placeholder="Describe el objetivo del workflow en lenguaje natural...">Research AI agent trends and write an executive summary</textarea>
     </div>
     <div class="section">
+      <h2>Configuración LLM</h2>
+      <select id="llmProvider" title="Proveedor de modelos">
+        <option value="">Servidor (Gemini) — sin key</option>
+        <option value="gemini">Google Gemini (tu key)</option>
+        <option value="openrouter">OpenRouter</option>
+        <option value="openai">OpenAI</option>
+        <option value="deepseek">DeepSeek</option>
+        <option value="siliconflow">SiliconFlow</option>
+        <option value="anthropic">Anthropic</option>
+      </select>
+      <select id="llmModel" style="margin-top:8px" title="Modelo"></select>
+      <input type="password" id="llmKey" placeholder="API key (opcional con servidor)" style="margin-top:8px" autocomplete="off">
+      <div style="font-size:10px;color:var(--muted);margin-top:6px">Tu key se guarda solo en este navegador (localStorage) y viaja cifrada por HTTPS. Nunca se almacena en el servidor.</div>
+    </div>
+    <div class="section">
       <h2>Herramientas</h2>
       <div class="chips" id="toolChips"></div>
     </div>
-    <div class="section">
+    <div class="section" style="flex:1;border-bottom:none">
       <h2>Estado</h2>
       <div class="status" id="status">Listo. Escribe un objetivo y pulsa "Generar workflow".</div>
     </div>
@@ -96,6 +111,52 @@ const TOOLS = ["wiki","search","python","http","read","write"];
 let workflow = { goal: "", steps: [] };
 let selected = null, scale = 1, panX = 0, panY = 0, dragging = null, modalId = null;
 
+// --- LLM config (BYOK) ---
+const MODELS = {
+  "": ["gemini-2.5-flash"],
+  gemini: ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"],
+  openrouter: ["openai/gpt-4o-mini", "anthropic/claude-3.5-sonnet", "google/gemini-2.0-flash-001", "meta-llama/llama-3.3-70b-instruct", "deepseek/deepseek-chat"],
+  openai: ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "o4-mini"],
+  deepseek: ["deepseek-chat", "deepseek-reasoner"],
+  siliconflow: ["Qwen/Qwen2.5-72B-Instruct", "deepseek-ai/DeepSeek-V3"],
+  anthropic: ["claude-3-5-sonnet-latest", "claude-3-5-haiku-latest"],
+};
+const CFG_KEY = "adaptagent_llm_cfg";
+const provEl = document.getElementById("llmProvider");
+const modelEl = document.getElementById("llmModel");
+const keyEl = document.getElementById("llmKey");
+
+function loadCfg() {
+  try { return JSON.parse(localStorage.getItem(CFG_KEY) || "{}"); } catch { return {}; }
+}
+function saveCfg() {
+  localStorage.setItem(CFG_KEY, JSON.stringify({ provider: provEl.value, model: modelEl.value, key: keyEl.value }));
+}
+function fillModels(provider, preferred) {
+  modelEl.innerHTML = "";
+  (MODELS[provider] || ["custom-model"]).forEach(m => {
+    const opt = document.createElement("option"); opt.value = m; opt.textContent = m;
+    modelEl.appendChild(opt);
+  });
+  if (preferred && MODELS[provider]?.includes(preferred)) modelEl.value = preferred;
+}
+provEl.onchange = () => { fillModels(provEl.value); saveCfg(); };
+modelEl.onchange = saveCfg;
+keyEl.oninput = saveCfg;
+(() => {
+  const cfg = loadCfg();
+  if (cfg.provider !== undefined) provEl.value = cfg.provider;
+  fillModels(provEl.value, cfg.model);
+  if (cfg.key) keyEl.value = cfg.key;
+})();
+function llmPayload() {
+  const payload = {};
+  if (provEl.value) payload.provider = provEl.value;
+  if (modelEl.value && modelEl.value !== "custom-model") payload.model = modelEl.value;
+  if (keyEl.value.trim()) payload.api_key = keyEl.value.trim();
+  return payload;
+}
+
 const canvas = document.getElementById("canvas"), ctx = canvas.getContext("2d");
 const NODE_W = 190, NODE_H = 74, GAP = 90;
 
@@ -123,19 +184,21 @@ async function generate() {
   const goal = document.getElementById("goalInput").value.trim();
   if (!goal) { log("Escribe un objetivo primero.", true); return; }
   const btn = document.getElementById("btnGenerate");
-  btn.disabled = true; log("Generando workflow…");
+  btn.disabled = true;
+  const who = provEl.value ? `${provEl.value}:${modelEl.value}` : "servidor (Gemini)";
+  log(`Generando workflow con ${who}…`);
   try {
-    const res = await fetch("/api/generate", {
+    const res = await fetch("/api", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ goal, tools: selectedTools() })
+      body: JSON.stringify({ goal, tools: selectedTools(), ...llmPayload() })
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || res.statusText);
     workflow = data;
     layout(); draw();
-    log(`✓ Workflow generado: ${data.steps.length} pasos.`);
+    log(`✓ Workflow generado (${data.steps.length} pasos) con ${who}.`);
   } catch (e) {
-    log("Error: " + e.message + " — (sin API key configurada en Vercel, importa un JSON manualmente)", true);
+    log("Error: " + e.message, true);
   } finally { btn.disabled = false; }
 }
 

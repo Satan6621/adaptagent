@@ -122,6 +122,24 @@ ENV_KEYS: dict[str, str] = {
     "anthropic": "ANTHROPIC_API_KEY",
 }
 
+DEFAULT_MODELS: dict[str, list[str]] = {
+    "gemini": ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"],
+    "openrouter": [
+        "openai/gpt-4o-mini",
+        "anthropic/claude-3.5-sonnet",
+        "google/gemini-2.0-flash-001",
+        "meta-llama/llama-3.3-70b-instruct",
+        "deepseek/deepseek-chat",
+    ],
+    "openai": ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "o4-mini"],
+    "deepseek": ["deepseek-chat", "deepseek-reasoner"],
+    "siliconflow": ["Qwen/Qwen2.5-72B-Instruct", "deepseek-ai/DeepSeek-V3"],
+    "anthropic": ["claude-3-5-sonnet-latest", "claude-3-5-haiku-latest"],
+    "ollama": ["llama3.1", "qwen2.5", "mistral"],
+    "vllm": ["local-model"],
+    "lmstudio": ["local-model"],
+}
+
 _LLM_REGISTRY: dict[str, Callable[[LLMConfig], LLM]] = {}
 
 
