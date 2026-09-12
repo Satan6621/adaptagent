@@ -70,8 +70,8 @@ class LLM(Protocol):
 class LLMConfig:
     """Provider-agnostic configuration."""
 
-    provider: str = "openai"
-    model: str = "gpt-4o-mini"
+    provider: str = "gemini"
+    model: str = "gemini-2.5-flash"
     api_key: str | None = None
     base_url: str | None = None
     temperature: float = 0.7
@@ -90,6 +90,8 @@ PROVIDER_ALIASES: dict[str, str] = {
     "deepseek": "deepseek",
     "openrouter": "openrouter",
     "siliconflow": "siliconflow",
+    "gemini": "gemini",
+    "google": "gemini",
     "ollama": "ollama",
     "vllm": "vllm",
     "lmstudio": "lmstudio",
@@ -102,6 +104,8 @@ DEFAULT_BASE_URLS: dict[str, str] = {
     "deepseek": "https://api.deepseek.com/v1",
     "openrouter": "https://openrouter.ai/api/v1",
     "siliconflow": "https://api.siliconflow.com/v1",
+    "gemini": "https://generativelanguage.googleapis.com/v1beta/openai",
+    "google": "https://generativelanguage.googleapis.com/v1beta/openai",
     "ollama": "http://localhost:11434/v1",
     "vllm": "http://localhost:8000/v1",
     "lmstudio": "http://localhost:1234/v1",
@@ -113,6 +117,8 @@ ENV_KEYS: dict[str, str] = {
     "deepseek": "DEEPSEEK_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
     "siliconflow": "SILICONFLOW_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+    "google": "GEMINI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
 }
 
@@ -131,6 +137,8 @@ def register_llm(provider: str) -> Callable:
 
 def resolve_llm(config: LLMConfig | None = None, **kwargs: Any) -> LLM:
     """Build an LLM instance from config (falls back to env: ADAPTAGENT_*)."""
+    from .openai_compat import AnthropicLLM, OpenAICompatLLM
+
     if config is None:
         config = LLMConfig()
     provider = PROVIDER_ALIASES.get(config.provider.lower(), config.provider.lower())

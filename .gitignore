@@ -9,3 +9,7 @@ venv/
 .pytest_cache/
 workspace/
 *.log
+
+.vercel
+.vercel/
+
