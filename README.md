@@ -1,6 +1,11 @@
 # AdaptAgent
 
+[![CI](https://github.com/Satan6621/adaptagent/actions/workflows/ci.yml/badge.svg)](https://github.com/Satan6621/adaptagent/actions)
+[![Live playground](https://img.shields.io/badge/playground-adaptagent.vercel.app-58a6ff)](https://adaptagent.vercel.app)
+
 A lightweight, strongly-typed framework for building, evaluating and **self-evolving** LLM agent workflows.
+
+**Live playground**: https://adaptagent.vercel.app — generate, edit and **execute** workflows visually (server-side OpenRouter or BYOK).
 
 ## Why AdaptAgent (vs. EvoAgentX)
 
@@ -74,6 +79,22 @@ adaptagent run "analiza X y escribe un resumen" --tools wiki,search --evolve 3 -
 adaptagent run "objetivo" --mcp "python:server.py" --mcp "npx:-y:@some/server" --hitl
 adaptagent ask "¿qué es la computación cuántica?" --tools wiki,python
 adaptagent show wf.json
+```
+
+## Benchmarks
+
+```python
+from adaptagent import Benchmark
+
+# JSONL: {"input": ..., "expected": ...} per line
+bench = Benchmark.from_jsonl("data.jsonl", metric="f1")  # or "em", "contains"
+result = await bench.run(graph, agent_manager, llm, judge=False)
+print(result)  # Benchmark [f1]: mean=0.7231 over 50 cases
+
+# combine with evolution: benchmark -> evolve -> re-benchmark
+from adaptagent import TextGradOptimizer
+await TextGradOptimizer(graph, manager, llm).optimize(iterations=4)
+result2 = await bench.run(graph, manager, llm)
 ```
 
 ## Web playground (Vercel)
