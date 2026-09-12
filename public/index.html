@@ -62,7 +62,7 @@
     <div class="section">
       <h2>Configuración LLM</h2>
       <select id="llmProvider" title="Proveedor de modelos">
-        <option value="">Servidor (Gemini) — sin key</option>
+        <option value="">Servidor (OpenRouter) — sin key</option>
         <option value="gemini">Google Gemini (tu key)</option>
         <option value="openrouter">OpenRouter</option>
         <option value="openai">OpenAI</option>
@@ -113,7 +113,7 @@ let selected = null, scale = 1, panX = 0, panY = 0, dragging = null, modalId = n
 
 // --- LLM config (BYOK) ---
 const MODELS = {
-  "": ["gemini-2.5-flash"],
+  "": ["openai/gpt-4o-mini"],
   gemini: ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"],
   openrouter: ["openai/gpt-4o-mini", "anthropic/claude-3.5-sonnet", "google/gemini-2.0-flash-001", "meta-llama/llama-3.3-70b-instruct", "deepseek/deepseek-chat"],
   openai: ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "o4-mini"],

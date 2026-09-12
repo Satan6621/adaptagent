@@ -34,7 +34,7 @@ def test_missing_goal_returns_400():
 
 
 def test_byok_requires_key_for_non_server_provider():
-    code, data = call_asgi("/api", {"goal": "x", "provider": "openrouter"})
+    code, data = call_asgi("/api", {"goal": "x", "provider": "openai"})
     assert code == 400
     assert "api_key" in data["error"]
 

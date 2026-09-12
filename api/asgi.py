@@ -14,7 +14,7 @@ from typing import Any
 
 from adaptagent import LLMConfig, WorkflowGenerator, resolve_llm
 
-SERVER_PROVIDERS = {"gemini", "google"}
+SERVER_PROVIDERS = {"gemini", "google", "openrouter"}
 
 
 def _json(status: int, payload: dict[str, Any]) -> dict[str, Any]:
@@ -22,8 +22,9 @@ def _json(status: int, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _resolve_client_config(payload: dict[str, Any]) -> LLMConfig:
-    provider = (payload.get("provider") or "").strip().lower() or "gemini"
-    model = (payload.get("model") or "").strip() or "gemini-2.5-flash"
+    provider = (payload.get("provider") or "").strip().lower() or "openrouter"
+    default_model = "openai/gpt-4o-mini" if provider == "openrouter" else "gemini-2.5-flash"
+    model = (payload.get("model") or "").strip() or default_model
     api_key = (payload.get("api_key") or "").strip()
     config = LLMConfig(provider=provider, model=model)
     if api_key:
