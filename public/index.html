@@ -87,6 +87,42 @@
       <h2>Herramientas</h2>
       <div class="chips" id="toolChips"></div>
     </div>
+    <div class="section">
+      <h2>🔌 Potenciar (MCP + Skills)</h2>
+      <div id="advSummary" style="font-size:10px;color:var(--muted);margin:2px 0 6px">Nada configurado aún.</div>
+      <details>
+        <summary style="cursor:pointer;font-size:11px;color:var(--accent)">Servidores MCP</summary>
+        <div id="mcpList" style="margin-top:4px"></div>
+        <input id="mcpName" placeholder="nombre (ej: fetch)" style="margin-top:6px;width:100%;box-sizing:border-box">
+        <select id="mcpType" style="margin-top:6px;width:100%">
+          <option value="http">HTTP / remoto (url)</option>
+          <option value="stdio">stdio local (comando)</option>
+        </select>
+        <input id="mcpUrl" placeholder="URL streamable-HTTP (https://.../mcp)" style="margin-top:6px;width:100%;box-sizing:border-box">
+        <input id="mcpCommand" placeholder="comando (ej: npx -y @modelcontextprotocol/server-fetch)" style="margin-top:6px;width:100%;box-sizing:border-box" hidden>
+        <div style="display:flex;gap:4px;margin-top:6px">
+          <button class="btn" onclick="addMCP()" style="flex:1">＋ Añadir MCP</button>
+          <button class="btn" onclick="testAllMCP()" style="flex:1">Probar conexión</button>
+        </div>
+      </details>
+      <details style="margin-top:8px">
+        <summary style="cursor:pointer;font-size:11px;color:var(--accent)">⚡ Herramientas HTTP personalizadas</summary>
+        <div id="ctList" style="margin-top:4px"></div>
+        <input id="ctName" placeholder="nombre (ej: weather)" style="margin-top:6px;width:100%;box-sizing:border-box">
+        <input id="ctDesc" placeholder="qué hace (para el agente)" style="margin-top:6px;width:100%;box-sizing:border-box">
+        <select id="ctMethod" style="margin-top:6px;width:100%"><option>GET</option><option>POST</option></select>
+        <input id="ctUrl" placeholder="URL con {param} (ej: https://api.example.com/w={city})" style="margin-top:6px;width:100%;box-sizing:border-box">
+        <button class="btn" onclick="addCustomTool()" style="margin-top:6px;width:100%">＋ Añadir tool</button>
+      </details>
+      <details style="margin-top:8px">
+        <summary style="cursor:pointer;font-size:11px;color:var(--accent)">🛡️ Skills de rol</summary>
+        <div id="skList" style="margin-top:4px"></div>
+        <input id="skName" placeholder="nombre skill" style="margin-top:6px;width:100%;box-sizing:border-box">
+        <input id="skRoles" placeholder="roles (researcher, writer...); vacío = todos" style="margin-top:6px;width:100%;box-sizing:border-box">
+        <textarea id="skText" rows="3" placeholder="instrucción reutilizable que se inyecta en el prompt del agente" style="margin-top:6px;width:100%;box-sizing:border-box"></textarea>
+        <button class="btn" onclick="addSkill()" style="margin-top:6px;width:100%">＋ Añadir skill</button>
+      </details>
+    </div>
     <div class="section" style="flex:1;border-bottom:none">
       <h2>Estado</h2>
       <div class="status" id="status">Listo. Escribe un objetivo y pulsa "Generar workflow".</div>
@@ -335,6 +371,124 @@ function llmPayload() {
   return payload;
 }
 
+// --- MCP servers + custom HTTP tools + personal skills (advanced settings) ---
+const ADV_KEY = "adaptagent_advanced";
+const mcpTypeEl = document.getElementById("mcpType");
+mcpTypeEl.onchange = () => {
+  const isHttp = mcpTypeEl.value === "http";
+  document.getElementById("mcpUrl").hidden = !isHttp;
+  document.getElementById("mcpCommand").hidden = isHttp;
+};
+function loadAdv() {
+  try { return JSON.parse(localStorage.getItem(ADV_KEY) || "{}"); } catch { return {}; }
+}
+function advState() {
+  const s = loadAdv();
+  s.mcp = s.mcp || []; s.tools = s.tools || []; s.skills = s.skills || [];
+  return s;
+}
+function saveAdv(state) { try { localStorage.setItem(ADV_KEY, JSON.stringify(state)); } catch {} }
+function advPayload() {
+  const s = advState();
+  return {
+    mcp_servers: s.mcp.map(m => ({ type: m.type, name: m.name, url: m.url, command: m.command, args: m.args })),
+    custom_tools: s.tools,
+    skills: s.skills,
+  };
+}
+function renderAdv() {
+  const s = advState();
+  const total = s.mcp.length + s.tools.length + s.skills.length;
+  document.getElementById("advSummary").textContent = total
+    ? `${s.mcp.length} MCP · ${s.tools.length} tools · ${s.skills.length} skills`
+    : "Nada configurado aún.";
+  document.getElementById("mcpList").innerHTML = s.mcp.map((m, i) =>
+    `<div class="libitem">🟢 ${escapeHtml(m.name || m.command || m.url || "MCP")} (${m.type}) ` +
+    `<button class="btn" onclick="testMCP(${i})" style="padding:2px 10px;font-size:10px">probar</button> ` +
+    `<button class="btn" onclick="delAdv('mcp',${i})" style="padding:2px 10px;font-size:10px">✕</button></div>`).join("")
+    || '<div style="font-size:10px;color:var(--muted)">Sin servidores MCP.</div>';
+  document.getElementById("ctList").innerHTML = s.tools.map((t, i) =>
+    `<div class="libitem">⚡ ${escapeHtml(t.name)} (${t.method || "GET"}) ` +
+    `<button class="btn" onclick="delAdv('tools',${i})" style="padding:2px 10px;font-size:10px">✕</button></div>`).join("")
+    || '<div style="font-size:10px;color:var(--muted)">Sin tools personalizadas.</div>';
+  document.getElementById("skList").innerHTML = s.skills.map((k, i) =>
+    `<div class="libitem">🛡️ ${escapeHtml(k.name)} → ${escapeHtml((k.apply || []).join(", ") || "todos")} ` +
+    `<button class="btn" onclick="delAdv('skills',${i})" style="padding:2px 10px;font-size:10px">✕</button></div>`).join("")
+    || '<div style="font-size:10px;color:var(--muted)">Sin skills.</div>';
+}
+function delAdv(list, i) { const s = advState(); s[list].splice(i, 1); saveAdv(s); renderAdv(); log("Elemento eliminado."); }
+function addMCP() {
+  const s = advState();
+  const isHttp = mcpTypeEl.value === "http";
+  const item = {
+    type: isHttp ? "http" : "stdio",
+    name: document.getElementById("mcpName").value.trim(),
+    url: isHttp ? document.getElementById("mcpUrl").value.trim() : "",
+    command: isHttp ? "" : document.getElementById("mcpCommand").value.trim(),
+    args: [],
+  };
+  if ((isHttp && !item.url) || (!isHttp && !item.command)) { log("URL o comando requerido.", true); return; }
+  s.mcp.push(item); saveAdv(s);
+  document.getElementById("mcpName").value = "";
+  document.getElementById("mcpUrl").value = "";
+  document.getElementById("mcpCommand").value = "";
+  renderAdv(); log(`✓ MCP "${item.name || item.url || item.command}" añadido.`);
+}
+function addCustomTool() {
+  const s = advState();
+  const tool = {
+    name: document.getElementById("ctName").value.trim(),
+    description: document.getElementById("ctDesc").value.trim(),
+    method: document.getElementById("ctMethod").value,
+    url: document.getElementById("ctUrl").value.trim(),
+  };
+  if (!tool.name || !tool.url) { log("Nombre y URL son obligatorios.", true); return; }
+  s.tools.push(tool); saveAdv(s);
+  ["ctName", "ctDesc", "ctUrl"].forEach(id => document.getElementById(id).value = "");
+  renderAdv(); log(`✓ Tool "${tool.name}" añadida.`);
+}
+function addSkill() {
+  const s = advState();
+  const skill = {
+    name: document.getElementById("skName").value.trim(),
+    text: document.getElementById("skText").value.trim(),
+    apply: document.getElementById("skRoles").value.split(",").map(r => r.trim()).filter(Boolean),
+  };
+  if (!skill.name || !skill.text) { log("Nombre y texto son obligatorios.", true); return; }
+  s.skills.push(skill); saveAdv(s);
+  document.getElementById("skName").value = "";
+  document.getElementById("skRoles").value = "";
+  document.getElementById("skText").value = "";
+  renderAdv(); log(`✓ Skill "${skill.name}" añadida.`);
+}
+async function testMCP(i) {
+  const s = advState(); const server = s.mcp[i];
+  if (!server) return;
+  log(`Probando MCP "${server.name || server.url || server.command}"…`);
+  const res = await fetch("/api/mcp/test", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ server })
+  });
+  const data = await res.json().catch(() => ({}));
+  if (data.ok) log(`✓ MCP OK — ${data.count} tools: ${data.tools.slice(0, 5).join(", ")}`);
+  else log(`✗ MCP falló: ${data.error || res.statusText}`, true);
+}
+async function testAllMCP() {
+  const s = advState();
+  if (!s.mcp.length) { log("No hay servidores MCP configurados.", true); return; }
+  for (let i = 0; i < s.mcp.length; i++) await testMCP(i);
+}
+function advLog(meta) {
+  if (!meta) return "";
+  const parts = [];
+  if (meta.http_tools) parts.push(`${meta.http_tools} tools HTTP`);
+  if (meta.mcp_tools) parts.push(`${meta.mcp_tools} tools MCP`);
+  (meta.skills || []).forEach(k => parts.push(`skill "${k.name}" (${k.applied_to} agentes)`));
+  if (meta.mcp_errors?.length) parts.push(`${meta.mcp_errors.length} MCP con error`);
+  return parts.length ? " · " + parts.join(", ") : "";
+}
+;
+
 const canvas = document.getElementById("canvas"), ctx = canvas.getContext("2d");
 const NODE_W = 190, NODE_H = 74, GAP = 90;
 
@@ -349,7 +503,7 @@ document.getElementById("btnImport").onclick = () => {
 };
 
 function afterWorkflowLoaded(msg) {
-  layout(); draw();
+layout(); draw(); renderAdv();
   const hasSteps = !!workflow.steps?.length;
   btnRun.disabled = !hasSteps;
   btnShare.disabled = !hasSteps;
@@ -378,7 +532,7 @@ async function generate() {
   try {
     const res = await fetch("/api", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ goal, tools: selectedTools(), ...llmPayload() })
+      body: JSON.stringify({ goal, tools: selectedTools(), ...llmPayload(), ...advPayload() })
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || res.statusText);
@@ -434,7 +588,7 @@ function escapeHtml(s) { return (s || "").replace(/&/g, "&amp;").replace(/</g, "
 async function runStreaming(out, who) {
   const res = await fetch("/api/execute/stream", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ workflow, ...llmPayload() })
+    body: JSON.stringify({ workflow, ...llmPayload(), ...advPayload() })
   });
   if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || res.statusText); }
   if (!res.body) throw new Error("no stream support");
@@ -488,6 +642,9 @@ function handleEvent(ev, out, who) {
        <div style="margin-top:8px;padding:8px;border:1px solid var(--green);border-radius:6px"><b>OUTPUT FINAL:</b>
        <div style="margin-top:4px">${escapeHtml(ev.final_output).replace(/\n/g, "<br>")}</div></div>`);
     log(`✓ Workflow ejecutado con ${who} (${ev.elapsed}s${cost}).`);
+  } else if (ev.event === "meta") {
+    const msg = "Herramientas activas:" + advLog(ev.meta);
+    out.insertAdjacentHTML("beforeend", `<div style="font-size:11px;color:var(--muted);margin-bottom:6px">${escapeHtml(msg)}</div>`);
   } else if (ev.event === "error") {
     out.insertAdjacentHTML("beforeend", `<div style="color:var(--red)">Error: ${escapeHtml(ev.error)}</div>`);
     log("Error: " + ev.error, true);
@@ -497,7 +654,7 @@ function handleEvent(ev, out, who) {
 async function runClassic(out, who) {
   const res = await fetch("/api/execute", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ workflow, ...llmPayload() })
+    body: JSON.stringify({ workflow, ...llmPayload(), ...advPayload() })
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || res.statusText);
@@ -511,6 +668,8 @@ async function runClassic(out, who) {
     `<div style="margin-top:10px;color:var(--green)">✓ Completado en ${data.elapsed_seconds}s</div>
      <div style="margin-top:8px;padding:8px;border:1px solid var(--green);border-radius:6px"><b>OUTPUT FINAL:</b>
      <div style="margin-top:4px">${escapeHtml(data.final_output).replace(/\n/g, "<br>")}</div></div>`);
+  if (data.meta) out.insertAdjacentHTML("beforeend",
+    `<div style="font-size:11px;color:var(--muted);margin-top:6px">Herramientas activas:${advLog(data.meta)}</div>`);
   log(`✓ Workflow ejecutado (${data.steps.length} pasos, ${data.elapsed_seconds}s) con ${who}.`);
 }
 

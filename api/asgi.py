@@ -55,6 +55,78 @@ async def _llm_from_payload(payload: dict[str, Any]) -> tuple[Any, LLMConfig | N
     return resolve_llm(config), config, None
 
 
+def _server_label(spec: dict[str, Any]) -> str:
+    return str(
+        spec.get("name") or spec.get("url") or spec.get("command") or spec.get("type") or "MCP"
+    )
+
+
+async def _augment_manager(manager: AgentManager, graph: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    """Assign MCP + custom HTTP tools to agents and apply personal skills.
+
+    Returns a stat dict: {"mcp_tools", "http_tools", "skills": [...], "mcp_errors": [...]}
+    Individual MCP server failures are collected in mcp_errors (never abort the run).
+    """
+    stat: dict[str, Any] = {"mcp_tools": 0, "http_tools": 0, "skills": [], "mcp_errors": []}
+    servers = payload.get("mcp_servers") or []
+    custom = payload.get("custom_tools") or []
+    skills = payload.get("skills") or []
+    tools: list[Any] = []
+    mcp_client: Any = None
+    try:
+        if servers:
+            from adaptagent.mcp.client import MCPClient
+
+            mcp_client = MCPClient(timeout=12.0)
+            for spec in servers:
+                try:
+                    conn_tools = await asyncio.wait_for(mcp_client.connect_spec(spec), timeout=12.0)
+                except Exception as exc:  # noqa: BLE001
+                    stat["mcp_errors"].append(f"{_server_label(spec)}: {str(exc)[:300]}")
+                else:
+                    tools.extend(conn_tools)
+                    stat["mcp_tools"] += len(conn_tools)
+        if custom:
+            from adaptagent.tools.custom import make_custom_http_tool
+
+            for spec in custom:
+                try:
+                    tools.append(make_custom_http_tool(spec))
+                    stat["http_tools"] += 1
+                except Exception as exc:  # noqa: BLE001
+                    stat["mcp_errors"].append(f"custom tool: {str(exc)[:300]}")
+        manager.tools = tools
+        manager.build_agents_from_workflow(graph, llm_config=None, assign_tools=bool(tools))
+        if skills:
+            from adaptagent.skills import apply_skills
+
+            stat["skills"] = apply_skills(manager, skills)
+    finally:
+        if mcp_client is not None:
+            await mcp_client.close()
+    return stat
+
+
+async def _mcp_test(payload: dict[str, Any]) -> dict[str, Any]:
+    """Test one MCP server config and report the tools it exposes."""
+    server = payload.get("server")
+    if not isinstance(server, dict):
+        return _json(400, {"error": "server config object is required"})
+    from adaptagent.mcp.client import MCPClient
+
+    client = MCPClient(timeout=8.0)
+    try:
+        tools = await asyncio.wait_for(client.connect_spec(server), timeout=8.0)
+        names = sorted({t.name for t in tools})
+        return _json(200, {"ok": True, "tools": names, "count": len(names)})
+    except asyncio.TimeoutError:
+        return _json(200, {"ok": False, "error": "timeout after 8s"})
+    except Exception as exc:  # noqa: BLE001
+        return _json(200, {"ok": False, "error": str(exc)[:500]})
+    finally:
+        await client.close()
+
+
 async def _generate(payload: dict[str, Any]) -> dict[str, Any]:
     goal = (payload.get("goal") or "").strip()
     if not goal:
@@ -62,7 +134,15 @@ async def _generate(payload: dict[str, Any]) -> dict[str, Any]:
     llm, _, error = await _llm_from_payload(payload)
     if error:
         return _json(400, {"error": error})
-    generator = WorkflowGenerator(llm)
+    tools = []
+    for spec in payload.get("custom_tools") or []:
+        try:
+            from adaptagent.tools.custom import make_custom_http_tool
+
+            tools.append(make_custom_http_tool(spec))
+        except Exception:  # noqa: BLE001
+            continue
+    generator = WorkflowGenerator(llm, tools=tools)
     graph = await generator.generate_workflow(goal)
     return _json(200, json.loads(graph.to_json()))
 
@@ -95,7 +175,7 @@ async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
         return _json(400, {"error": error})
     manager = AgentManager()
     manager.register_llm(llm)
-    manager.build_agents_from_workflow(graph, assign_tools=False)
+    advanced = await _augment_manager(manager, graph, payload)
 
     start = time.time()
     workflow = Workflow(graph=graph, agent_manager=manager, llm=llm, max_parallel=2)
@@ -122,6 +202,7 @@ async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
             "elapsed_seconds": elapsed,
             "cost_usd": round(output.total_cost_usd, 6),
             "usage": output.total_usage,
+            "meta": advanced,
         },
     )
 
@@ -158,10 +239,10 @@ async def _execute_step(payload: dict[str, Any]) -> dict[str, Any]:
         if not cond.evaluate(source_out):
             return _json(200, {"skipped": True, "output": "", "usage": {}, "cost_usd": 0.0})
 
-    # execute (single step, no agent tools on server)
+    # execute single step (with personal tools/skills if provided)
     manager = AgentManager()
     manager.register_llm(llm)
-    manager.build_agents_from_workflow(graph, assign_tools=False)
+    advanced = await _augment_manager(manager, graph, payload)
     from adaptagent.workflow.executor import StepResult
 
     workflow = Workflow(graph=graph, agent_manager=manager, llm=llm, max_parallel=1)
@@ -180,6 +261,7 @@ async def _execute_step(payload: dict[str, Any]) -> dict[str, Any]:
             "usage": result.usage,
             "cost_usd": round(result.cost_usd, 6),
             "skipped": False,
+            "meta": advanced,
         },
     )
 
@@ -205,7 +287,9 @@ class _App:
             try:
                 if path.endswith("/execute/stream"):
                     return await self._stream_execute(payload, send)
-                if path.endswith("/step"):
+                if path.endswith("/mcp/test"):
+                    response = await _mcp_test(payload)
+                elif path.endswith("/step"):
                     response = await _execute_step(payload)
                 elif path.endswith("/models"):
                     response = await _models(payload)
@@ -252,7 +336,8 @@ class _App:
                 return
             manager = AgentManager()
             manager.register_llm(llm)
-            manager.build_agents_from_workflow(graph, assign_tools=False)
+            advanced = await _augment_manager(manager, graph, payload)
+            await sse({"event": "meta", "meta": advanced})
         except KeyError as exc:
             await sse({"event": "error", "error": f"invalid workflow: missing field {exc}"})
             await send({"type": "http.response.body", "body": b"", "more_body": False})
