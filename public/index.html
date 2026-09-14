@@ -56,9 +56,23 @@
   <button class="btn" id="btnExport">Exportar</button>
   <button class="btn" id="btnExportPy" disabled title="Descargar script Python ejecutable">🐍 Python</button>
   <button class="btn" id="btnRun" disabled title="Ejecuta el workflow mostrado (streaming)">▶ Ejecutar</button>
+  <button class="btn" id="btnResume" disabled title="Reanudar el último run desde su checkpoint guardado">↻ Reanudar</button>
+  <button class="btn" id="btnChat" title="Chat con el agente: escribe un objetivo y ve la ejecución paso a paso (misma configuración LLM)">Chat</button>
   <button class="btn primary" id="btnGenerate">⚡ Generar</button>
 </header>
 <div class="main">
+  <!-- chat: overlay flotante reusa llmPayload()/advPayload() y runStreaming() del canvas -->
+  <div id="chatOverlay" hidden>
+    <div class="chat-head">
+      <span>Chat con el agente</span>
+      <button class="btn" id="btnChatClose" title="Cerrar chat">✕</button>
+    </div>
+    <div id="chatBody" class="chat-body" style="overflow-y:auto;flex:1;padding:10px"></div>
+    <div class="chat-foot" style="display:flex;gap:8px;padding:10px;border-top:1px solid var(--border)">
+      <textarea id="chatInput" placeholder="Describe lo que quieres lograr (se ejecuta igual que el objetivo)..." style="flex:1;height:auto;min-height:44px"></textarea>
+      <button class="btn primary" id="btnChatSend">Enviar</button>
+    </div>
+  </div>
   <div id="sidebar">
     <div class="section">
       <h2>Objetivo</h2>
@@ -121,6 +135,23 @@
         <input id="skRoles" placeholder="roles (researcher, writer...); vacío = todos" style="margin-top:6px;width:100%;box-sizing:border-box">
         <textarea id="skText" rows="3" placeholder="instrucción reutilizable que se inyecta en el prompt del agente" style="margin-top:6px;width:100%;box-sizing:border-box"></textarea>
         <button class="btn" onclick="addSkill()" style="margin-top:6px;width:100%">＋ Añadir skill</button>
+        <button class="btn" onclick="loadSkillKit()" style="margin-top:6px;width:100%">🦸 Cargar kit de metodología</button>
+      </details>
+      <details style="margin-top:8px">
+        <summary style="cursor:pointer;font-size:11px;color:var(--accent)">⚙️ Modo metodología</summary>
+        <div style="font-size:10px;color:var(--muted);margin:2px 0 6px">Inyecta un contrato de proceso (diseño-antes-código, TDD, evidencia sobre afirmaciones, causa raíz) en TODOS los agentes.</div>
+        <select id="methodSelect" style="width:100%">
+          <option value="">-- sin metodología --</option>
+          <option value="superpowers">🦸 Superpowers</option>
+        </select>
+      </details>
+      <details style="margin-top:8px">
+        <summary style="cursor:pointer;font-size:11px;color:var(--accent)">⏹️ Parada automática</summary>
+        <div style="font-size:10px;color:var(--muted);margin:2px 0 6px">Frena la ejecución cuando un paso emite el texto indicado o tras N pasos. El resto de pasos queda marcado como omitido.</div>
+        <label style="font-size:10px;color:var(--muted)">Sentinel (texto a buscar en cualquier salida)</label>
+        <input id="stopSentinel" placeholder="ej: APROBADO — no escribir más" style="margin-top:4px;width:100%;box-sizing:border-box">
+        <label style="font-size:10px;color:var(--muted);margin-top:6px">Máximo de pasos ejecutados</label>
+        <input id="stopMaxSteps" type="number" min="1" placeholder="(vacío = sin límite)" style="margin-top:4px;width:100%;box-sizing:border-box">
       </details>
     </div>
     <div class="section" style="flex:1;border-bottom:none">
@@ -158,6 +189,16 @@
     </select>
     <input type="text" id="mCondSource" placeholder="id del paso fuente (ej: s1)" style="margin-top:6px">
     <input type="text" id="mCondValue" placeholder="texto o patrón regex" style="margin-top:6px">
+    <label style="margin-top:8px">Bucle (repeat_until) — repite el paso hasta que su SALIDA cumpla la regla</label>
+    <select id="mRepeatRule" style="margin-top:6px;width:100%">
+      <option value="contains">contiene el texto</option>
+      <option value="score_gte">el juez puntúa ≥ valor (LLM como juez)</option>
+      <option value="regex">cumple el regex</option>
+    </select>
+    <input type="text" id="mRepeatValue" placeholder='p. ej.: "PASS" (contiene) o "70" (score_gte)' style="margin-top:6px">
+    <div style="font-size:10px;color:var(--muted);margin:4px 0">max_repeats: <input type="number" id="mRepeatMax" value="3" min="1" max="10" style="width:60px;background:transparent;border:1px solid var(--border)"></div>
+    <label style="margin-top:8px">Esquema de salida (JSON opcional) — se valida y re-intenta hasta cumplirlo</label>
+    <textarea id="mSchema" rows="3" placeholder='{"type":"object","required":["titulo"],"properties":{"titulo":{"type":"string"}}}' style="margin-top:4px;width:100%;box-sizing:border-box;font-family:var(--mono);font-size:10px"></textarea>
     <div class="row">
       <button class="btn" id="mDelete">Eliminar nodo</button>
       <button class="btn" id="mCancel">Cancelar</button>
@@ -182,6 +223,12 @@ const MODELS = {
 };
 const CFG_KEY = "adaptagent_llm_cfg";
 const WF_KEY = "adaptagent_workflow";
+const CKPT_KEY = "adaptagent_checkpoint";
+function loadLastCheckpoint() { try { return JSON.parse(localStorage.getItem(CKPT_KEY) || "null"); } catch { return null; } }
+let lastCheckpoint = loadLastCheckpoint();
+function saveLastCheckpoint(cp) { if (!cp) return; lastCheckpoint = cp; try { localStorage.setItem(CKPT_KEY, JSON.stringify(cp)); } catch {} updateResumeBtn(); }
+function clearLastCheckpoint() { lastCheckpoint = null; try { localStorage.removeItem(CKPT_KEY); } catch {} updateResumeBtn(); }
+function updateResumeBtn() { const b = document.getElementById("btnResume"); if (b) b.disabled = !lastCheckpoint || !workflow.steps?.length; }
 
 // --- templates (no LLM needed, instantly editable) ---
 const TEMPLATES = {
@@ -212,6 +259,43 @@ const TEMPLATES = {
     goal: "Write a haiku about any topic",
     steps: [
       { id: "s1", name: "Poeta", instruction: "Escribe un haiku (5-7-5) sobre el tema dado, evocador y sin clichés.", inputs: [], agent_hint: "writer" },
+    ],
+  },
+  // 🦸 Metodología (adaptada de Superpowers)
+  "Planificar→Especificar→Diseñar (Superpowers)": {
+    goal: "Define what to build, then plan it as bite-size tasks",
+    steps: [
+      { id: "p1", name: "Clarificador", instruction: "Haz preguntas para clarificar el objetivo real. Devuelve la lista de preguntas pendientes (una cada vez) y los supuestos detectados.", inputs: [], agent_hint: "researcher" },
+      { id: "p2", name: "Arquitecto", instruction: "Responde a lo que ya esté claro y propón 2-3 enfoques alternativos con ventajas, inconvenientes y una recomendación razonada.", inputs: ["p1"], agent_hint: "analyst" },
+      { id: "p3", name: "Especificador", instruction: "Redacta la especificación: objetivo, alcance, requisitos funcionales y criterios de aceptación verificables.", inputs: ["p2"], agent_hint: "writer" },
+      { id: "p4", name: "Planificador", instruction: "Descompón la especificación en tareas de 2-5 minutos. Para cada tarea indica: archivos o áreas exactas a tocar y cómo verificarla. El último paso debe ser 'revisión final de calidad'.", inputs: ["p3"], agent_hint: "analyst" },
+    ],
+  },
+  "Rally TDD (Red-Green-Refactor)": {
+    goal: "Implement feature {feature} following strict test-driven development",
+    steps: [
+      { id: "s1", name: "Test Writer (RED)", instruction: "Escribe ÚNICAMENTE un test que falle para la funcionalidad requerida. Nombre claro, un solo comportamiento, sin mocks salvo necesidad. Devuelve solo el código del test.", inputs: [], agent_hint: "coder" },
+      { id: "s2", name: "Implementador (GREEN)", instruction: "Si el test no pasaría aún, escribe el código MÍNIMO que lo hace pasar. No añadas features ni refactorices más allá del test.", inputs: ["s1"], agent_hint: "coder" },
+      { id: "s3", name: "Refactorista", instruction: "Revisa el código del paso anterior. Si detectas duplicación (DRY) o complejidad innecesaria (YAGNI), refactoriza manteniendo el comportamiento. Devuelve el código limpio final.", inputs: ["s2"], agent_hint: "coder" },
+      { id: "s4", name: "Verificador", instruction: "Verifica que (1) el test de s1 captura el comportamiento correcto, (2) el código de s3 lo hace pasar sin features extra, (3) no hay errores obvios. Si algo falla, corrige el código tú mismo. Termina SIEMPRE tu respuesta con una línea 'PASS' seguida del estado final cuando todo esté correcto. Bucle de auto-corrección: cada intento debe mejorar el anterior.", inputs: ["s3"], agent_hint: "critic", repeat_until: { "rule": "contains", "value": "PASS", "source": "" }, max_repeats: 3, },
+    ],
+  },
+  "Debugging sistemático (causa raíz)": {
+    goal: "Diagnose and fix the reported bug at its root cause",
+    steps: [
+      { id: "s1", name: "Investigador", instruction: "Fase 1: no propongas fixes aún. Lee el error completo, describe cómo reproducirlo de forma consistente y lista qué cambios recientes podrían causarlo. En sistemas multicapa: describe qué evidencia juntar en cada frontera de componente.", inputs: [], agent_hint: "analyst" },
+      { id: "s2", name: "Hipótesis", instruction: "Identifica el patrón: busca código que funcione y sea parecido, compara y lista TODAS las diferencias entre lo que funciona y lo que falla. Formula UNA hipótesis concreta (causa X porque Y) y el cambio mínimo para probarla.", inputs: ["s1"], agent_hint: "analyst" },
+      { id: "s3", name: "Corrector", instruction: "Crea el caso de prueba que reproduzca el bug. Implementa UN único fix dirigido a la causa raíz (no al síntoma). No hagas 'mejoras que ya puestos'. Devuelve el fix.", inputs: ["s2"], agent_hint: "coder" },
+      { id: "s4", name: "Verificador", instruction: "Verifica que el fix resuelve la causa raíz y no rompe nada más. Si quedan problemas, corrígelos tú mismo o señala cuál es la causa raíz restante. Termina SIEMPRE tu respuesta con 'PASS' cuando esté resuelto. Bucle de auto-corrección: cada intento debe mejorar el anterior.", inputs: ["s3"], agent_hint: "critic", repeat_until: { "rule": "contains", "value": "PASS", "source": "" }, max_repeats: 3, },
+    ],
+  },
+  "Sprint con revisión por severidad": {
+    goal: "Plan, implement and critically review a change",
+    steps: [
+      { id: "s1", name: "Planificador", instruction: "Planifica el trabajo en tareas concretas y verificables. Devuelve el plan.", inputs: [], agent_hint: "analyst" },
+      { id: "s2", name: "Implementador", instruction: "Ejecuta el plan paso a paso aplicando YAGNI y DRY: solo lo necesario, sin duplicación, el cambio más pequeño que funcione.", inputs: ["s1"], agent_hint: "coder" },
+      { id: "s3", name: "Crítico", instruction: "Revisa el resultado contra el plan y los criterios de aceptación. Reporta CADA hallazgo con severidad critical/major/minor y su localización. No modifiques el trabajo: solo reporta.", inputs: ["s2"], agent_hint: "critic" },
+      { id: "s4", name: "Revisor final", instruction: "Ten en cuenta el informe del crítico. Devuelve la versión final corregida. Si el informe tiene issues criticals, corrígelos obligatoriamente. Termina con un resumen de cambios aplicados.", inputs: ["s3"], agent_hint: "writer" },
     ],
   },
 };
@@ -257,6 +341,11 @@ function decodeShare(hash) {
 }
 const btnRun = document.getElementById("btnRun");
 btnRun.onclick = runWorkflow;
+const btnResume = document.getElementById("btnResume");
+btnResume.onclick = () => {
+  if (!lastCheckpoint) { log("No hay checkpoint guardado todavía.", true); return; }
+  runWorkflow(true);
+};
 const btnShare = document.getElementById("btnShare");
 btnShare.onclick = () => {
   if (!workflow.steps?.length) return;
@@ -324,7 +413,7 @@ async def main() -> None:
     manager.build_agents_from_workflow(graph)
     output = await Workflow(graph=graph, agent_manager=manager, llm=llm).execute()
     print(output.final_output)
-    print(f"\\nCost: ${output.total_cost_usd:.4f} USD | Tokens: {output.total_usage}")
+    print(f"\\nCost: \${output.total_cost_usd:.4f} USD | Tokens: {output.total_usage}")
 
 
 if __name__ == "__main__":
@@ -385,23 +474,41 @@ function loadAdv() {
 function advState() {
   const s = loadAdv();
   s.mcp = s.mcp || []; s.tools = s.tools || []; s.skills = s.skills || [];
+  s.methodology = s.methodology || "";
+  s.stop_sentinel = s.stop_sentinel || "";
+  s.stop_max_steps = s.stop_max_steps || "";
   return s;
 }
 function saveAdv(state) { try { localStorage.setItem(ADV_KEY, JSON.stringify(state)); } catch {} }
 function advPayload() {
   const s = advState();
+  const stop_when = {};
+  try { if (document.getElementById("stopSentinel").value.trim()) stop_when.contains = document.getElementById("stopSentinel").value.trim(); } catch {}
+  try { const ms = parseInt(document.getElementById("stopMaxSteps").value, 10); if (ms > 0) stop_when.max_steps = ms; } catch {}
   return {
     mcp_servers: s.mcp.map(m => ({ type: m.type, name: m.name, url: m.url, command: m.command, args: m.args })),
     custom_tools: s.tools,
     skills: s.skills,
+    methodology: s.methodology,
+    stop_when,
   };
 }
 function renderAdv() {
   const s = advState();
   const total = s.mcp.length + s.tools.length + s.skills.length;
-  document.getElementById("advSummary").textContent = total
-    ? `${s.mcp.length} MCP · ${s.tools.length} tools · ${s.skills.length} skills`
+  document.getElementById("advSummary").textContent = (total || s.methodology)
+    ? `${s.mcp.length} MCP · ${s.tools.length} tools · ${s.skills.length} skills${s.methodology ? ` · ⚙️ ${s.methodology}` : ""}`
     : "Nada configurado aún.";
+  const methodEl = document.getElementById("methodSelect");
+  if (methodEl) methodEl.value = s.methodology;
+  methodEl.onchange = () => { const st = advState(); st.methodology = methodEl.value; saveAdv(st); renderAdv(); log(st.methodology ? `✓ Metodología "${st.methodology}" activa para el próximo run.` : "Metodología desactivada."); };
+  try {
+    const ss = document.getElementById("stopSentinel"), sm = document.getElementById("stopMaxSteps");
+    ss.value = s.stop_sentinel || "";
+    sm.value = s.stop_max_steps || "";
+    ss.onchange = () => { const st = advState(); st.stop_sentinel = ss.value.trim(); saveAdv(st); };
+    sm.onchange = () => { const st = advState(); st.stop_max_steps = sm.value; saveAdv(st); };
+  } catch {}
   document.getElementById("mcpList").innerHTML = s.mcp.map((m, i) =>
     `<div class="libitem">🟢 ${escapeHtml(m.name || m.command || m.url || "MCP")} (${m.type}) ` +
     `<button class="btn" onclick="testMCP(${i})" style="padding:2px 10px;font-size:10px">probar</button> ` +
@@ -461,6 +568,24 @@ function addSkill() {
   document.getElementById("skText").value = "";
   renderAdv(); log(`✓ Skill "${skill.name}" añadida.`);
 }
+async function loadSkillKit() {
+  try {
+    const res = await fetch("/api/methodology");
+    const data = await res.json();
+    const s = advState();
+    const existing = new Set(s.skills.map(k => k.name));
+    let added = 0;
+    (data.skills || []).forEach(k => {
+      if (existing.has(k.name)) return;
+      s.skills.push({ name: k.name, text: k.text, apply: k.apply || [] });
+      added++;
+    });
+    if (added) { saveAdv(s); renderAdv(); }
+    log(added ? `✓ Kit de metodología cargado: ${added} skills añadidas.` : "El kit ya está cargado.");
+  } catch (e) {
+    log(`✗ No se pudo cargar el kit: ${e.message || e}`, true);
+  }
+}
 async function testMCP(i) {
   const s = advState(); const server = s.mcp[i];
   if (!server) return;
@@ -484,6 +609,7 @@ function advLog(meta) {
   if (meta.http_tools) parts.push(`${meta.http_tools} tools HTTP`);
   if (meta.mcp_tools) parts.push(`${meta.mcp_tools} tools MCP`);
   (meta.skills || []).forEach(k => parts.push(`skill "${k.name}" (${k.applied_to} agentes)`));
+  if (meta.methodology?.length) parts.push(`⚙️ metodología: ${meta.methodology.join(", ")}`);
   if (meta.mcp_errors?.length) parts.push(`${meta.mcp_errors.length} MCP con error`);
   return parts.length ? " · " + parts.join(", ") : "";
 }
@@ -509,6 +635,7 @@ layout(); draw(); renderAdv();
   btnShare.disabled = !hasSteps;
   btnExportPy.disabled = !hasSteps;
   saveWorkflow();
+  updateResumeBtn();
   if (msg) log(msg);
 }
 
@@ -555,27 +682,31 @@ function exportJSON() {
 // --- run workflow (streaming SSE with fallback) ---
 const stepStatus = {}; // step_id -> "running"|"done"
 
-async function runWorkflow() {
+async function runWorkflow(resume = false) {
   if (!workflow.steps?.length) { log("Genera o importa un workflow primero.", true); return; }
+  if (resume && !lastCheckpoint) { log("No hay checkpoint para reanudar.", true); return; }
   btnRun.disabled = true; btnRun.textContent = "⏳ Ejecutando…";
+  document.getElementById("btnResume").disabled = true;
   const panel = document.getElementById("resultsPanel");
   const out = document.getElementById("runResults");
   panel.style.display = "block"; out.innerHTML = "";
   const who = provEl.value ? `${provEl.value}:${modelEl.value}` : "servidor (OpenRouter)";
-  log(`Ejecutando con ${who}…`);
+  log((resume ? "↻ Reanudando desde el último checkpoint" : `Ejecutando con ${who}`) + "…");
+  if (!resume) clearLastCheckpoint();
   let usedFallback = false;
   try {
     // try SSE streaming first
-    await runStreaming(out, who);
+    await runStreaming(out, who, resume ? lastCheckpoint : null);
   } catch (e) {
     if (String(e.message).includes("stream")) { log("Streaming no disponible, usando modo clásico…"); }
     usedFallback = true;
   }
   if (usedFallback) {
-    try { await runClassic(out, who); }
+    try { await runClassic(out, who, resume ? lastCheckpoint : null); }
     catch (e) { out.textContent = "Error: " + e.message; log("Error ejecutando: " + e.message, true); }
   }
   btnRun.disabled = false; btnRun.textContent = "▶ Ejecutar";
+  updateResumeBtn();
 }
 
 function stepCard(id, name) {
@@ -585,10 +716,10 @@ function stepCard(id, name) {
 }
 function escapeHtml(s) { return (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
 
-async function runStreaming(out, who) {
+async function runStreaming(out, who, resumeCp) {
   const res = await fetch("/api/execute/stream", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ workflow, ...llmPayload(), ...advPayload() })
+    body: JSON.stringify({ workflow, ...llmPayload(), ...advPayload(), ...(resumeCp ? { checkpoint: resumeCp } : {}) })
   });
   if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || res.statusText); }
   if (!res.body) throw new Error("no stream support");
@@ -638,12 +769,23 @@ function handleEvent(ev, out, who) {
     const cost = ev.cost_usd ? ` · coste $${ev.cost_usd.toFixed(4)}` : "";
     const tokens = ev.usage?.completion_tokens ? ` · ${ev.usage.completion_tokens} tokens` : "";
     out.insertAdjacentHTML("beforeend",
-      `<div style="margin-top:10px;color:var(--green)">✓ Completado en ${ev.elapsed}s${cost}${tokens}</div>
+      `<div style="margin-top:10px;color:var(--green)">✓ Completado en ${ev.elapsed}s${cost}${tokens}${ev.stopped ? ' · <b>⏹ ' + escapeHtml(ev.stopped) + '</b>' : ''}` +
+      (ev.run_id ? ` · <span style="color:var(--muted)">run ${escapeHtml(ev.run_id)}</span>` : "") + `</div>
        <div style="margin-top:8px;padding:8px;border:1px solid var(--green);border-radius:6px"><b>OUTPUT FINAL:</b>
        <div style="margin-top:4px">${escapeHtml(ev.final_output).replace(/\n/g, "<br>")}</div></div>`);
+    if (ev.stopped) saveLastCheckpoint({ run_id: ev.run_id }); else clearLastCheckpoint();
     log(`✓ Workflow ejecutado con ${who} (${ev.elapsed}s${cost}).`);
+  } else if (ev.event === "donecp") {
+    if (ev.stopped) saveLastCheckpoint(ev.checkpoint); else clearLastCheckpoint();
+    log(`✓ Workflow ejecutado con ${who} (${ev.elapsed}s${cost}).`);
+  } else if (ev.event === "checkpoint") {
+    saveLastCheckpoint(ev.checkpoint);
+  } else if (ev.event === "resumed") {
+    out.insertAdjacentHTML("beforeend", `<div style="font-size:11px;color:var(--muted)">↻ Reanudado desde: ${(ev.steps || []).join(", ")}</div>`);
+  } else if (ev.event === "stopped") {
+    out.insertAdjacentHTML("beforeend", `<div style="margin-top:6px;color:var(--orange)">⏹ Ejecución detenida: ${escapeHtml(ev.reason)}</div>`);
   } else if (ev.event === "meta") {
-    const msg = "Herramientas activas:" + advLog(ev.meta);
+    const msg = "Herramientas activas:" + advLog(ev.meta) + (ev.meta?.run_id ? ` · run ${escapeHtml(ev.meta.run_id)}` : "");
     out.insertAdjacentHTML("beforeend", `<div style="font-size:11px;color:var(--muted);margin-bottom:6px">${escapeHtml(msg)}</div>`);
   } else if (ev.event === "error") {
     out.insertAdjacentHTML("beforeend", `<div style="color:var(--red)">Error: ${escapeHtml(ev.error)}</div>`);
@@ -651,10 +793,10 @@ function handleEvent(ev, out, who) {
   }
 }
 
-async function runClassic(out, who) {
+async function runClassic(out, who, resumeCp) {
   const res = await fetch("/api/execute", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ workflow, ...llmPayload(), ...advPayload() })
+    body: JSON.stringify({ workflow, ...llmPayload(), ...advPayload(), ...(resumeCp ? { checkpoint: resumeCp } : {}) })
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || res.statusText);
@@ -798,6 +940,10 @@ function openModal(step) {
   document.getElementById("mCondRule").value = cond?.rule || "";
   document.getElementById("mCondSource").value = cond?.source || (step.inputs || [])[0] || "";
   document.getElementById("mCondValue").value = cond?.value || "";
+  document.getElementById("mRepeatRule").value = step.repeat_until?.rule || "contains";
+  document.getElementById("mRepeatValue").value = step.repeat_until?.value || "";
+  document.getElementById("mRepeatMax").value = step.max_repeats || 3;
+  document.getElementById("mSchema").value = step.output_schema ? JSON.stringify(step.output_schema, null, 2) : "";
   modal.style.display = "flex";
 }
 document.getElementById("mCancel").onclick = () => modal.style.display = "none";
@@ -815,6 +961,16 @@ document.getElementById("mSave").onclick = () => {
       step.condition = { source, rule, value: document.getElementById("mCondValue").value };
     } else step.condition = null;
   } else step.condition = null;
+  const repeatVal = document.getElementById("mRepeatValue").value.trim();
+  if (repeatVal) {
+    step.repeat_until = { source: "", rule: document.getElementById("mRepeatRule").value, value: repeatVal };
+    step.max_repeats = Math.min(10, Math.max(1, parseInt(document.getElementById("mRepeatMax").value, 10) || 3));
+  } else { delete step.repeat_until; delete step.max_repeats; }
+  const schemaText = document.getElementById("mSchema").value.trim();
+  if (schemaText) {
+    try { step.output_schema = JSON.parse(schemaText); }
+    catch (e) { modal.style.display = "none"; afterWorkflowLoaded("Esquema de salida JSON inválido: " + e.message); return; }
+  } else { delete step.output_schema; }
   modal.style.display = "none"; afterWorkflowLoaded("Nodo actualizado.");
 };
 document.getElementById("mDelete").onclick = () => {
@@ -829,6 +985,45 @@ function log(msg, isErr = false) {
   el.textContent = msg;
 }
 layout(); draw();
+
+// --- Chat con el agente (tablero): reusa runStreaming/llmPayload/advPayload del canvas; sin duplicar config LLM ni stream ---
+const chatOverlay = document.getElementById("chatOverlay");
+const chatBody = document.getElementById("chatBody");
+const chatInput = document.getElementById("chatInput");
+document.getElementById("btnChat").onclick = () => {
+  chatOverlay.hidden = !chatOverlay.hidden;
+  if (!chatOverlay.hidden) chatInput.focus();
+};
+document.getElementById("btnChatClose").onclick = () => { chatOverlay.hidden = true; };
+function chatBubble(text, isUser) {
+  const d = document.createElement("div");
+  d.style.cssText = "max-width:85%;align-self:" + (isUser ? "flex-end" : "flex-start") + ";background:" + (isUser ? "var(--accent)" : "var(--panel)") + ";color:" + (isUser ? "#fff" : "var(--text)") + ";padding:8px 10px;border-radius:8px;border:1px solid var(--border);white-space:pre-wrap;word-break:break-word";
+  d.textContent = text;
+  chatBody.appendChild(d);
+  chatBody.scrollTop = chatBody.scrollHeight;
+  return d;
+}
+document.getElementById("btnChatSend").onclick = sendChat;
+chatInput.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); } });
+async function sendChat() {
+  const goal = chatInput.value.trim();
+  if (!goal) return;
+  chatInput.value = "";
+  chatBubble(goal, true);
+  const who = provEl.value ? (provEl.value + ":" + modelEl.value) : "servidor (OpenRouter)";
+  const bubble = chatBubble("Ejecutando con " + who + "...", false);
+  try {
+    const res = await fetch("/api", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ goal, ...llmPayload(), ...advPayload() }) });
+    const gen = await res.json();
+    if (!res.ok) throw new Error(gen.error || res.statusText);
+    workflow = gen;
+    const out = document.createElement("div");
+    bubble.textContent = "";
+    bubble.appendChild(out);
+    await runStreaming(out, who, null);
+    bubble.textContent = "Listo �1�/ �1� elegir otra plantilla.";
+  } catch (e) { bubble.textContent = "Error: " + e.message; bubble.style.color = "var(--red)"; }
+}
 </script>
 </body>
 </html>

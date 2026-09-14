@@ -107,6 +107,13 @@ vercel         # deploy (set OPENAI_API_KEY in the project env)
 Visual editor: generate workflows from a goal, drag nodes, double-click to edit
 instructions/roles/dependencies, export JSON.
 
+Playground includes **methodology templates** adapted from the Superpowers
+methodology (plan→spec→design, TDD Red-Green-Refactor with self-correcting
+loops, systematic debugging, sprint with severity-graded review), a one-click
+skills kit and an optional **methodology mode** that injects a process contract
+(design-before-code, TDD, evidence over claims, root-cause debugging) into every
+agent. See `adaptagent/skills.py`.
+
 ## Providers
 
 `resolve_llm` auto-configures from env vars:

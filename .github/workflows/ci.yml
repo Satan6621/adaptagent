@@ -5,6 +5,12 @@ on:
     branches: [main, master]
   pull_request:
 
+# New pushes to the same branch/PR supersede earlier runs (mirrors upstream
+# atomic-agent release.yml/test.yml gate: cancel-in-progress on the PR gate).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ${{ matrix.os }}

@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+import uuid
 from typing import Any
 
 from adaptagent import AgentManager, LLMConfig, Workflow, WorkflowGenerator, resolve_llm
@@ -23,6 +24,42 @@ from adaptagent.workflow import WorkflowGraph
 
 SERVER_PROVIDERS = {"gemini", "google", "openrouter"}
 MAX_EXECUTION_SECONDS = 50.0  # Vercel hobby function limit
+
+
+def _stop_when_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Global termination options: {"contains": str, "max_steps": int}."""
+    stop_when: dict[str, Any] = {}
+    raw = payload.get("stop_when") or {}
+    if isinstance(raw, dict):
+        if raw.get("contains"):
+            stop_when["contains"] = str(raw["contains"])
+        if raw.get("max_steps"):
+            try:
+                stop_when["max_steps"] = int(raw["max_steps"])
+            except (TypeError, ValueError):
+                pass
+    return stop_when
+
+
+def _checkpoint_from_payload(payload: dict[str, Any]):
+    """Resume from an inline checkpoint blob or from a stored run_id."""
+    from adaptagent.checkpoint import Checkpoint
+
+    inline = payload.get("checkpoint")
+    if isinstance(inline, dict) and inline.get("step_outputs"):
+        return Checkpoint.from_dict(inline)
+    resume_run = payload.get("resume_run")
+    if resume_run:
+        cp = get_store().get(str(resume_run))
+        if cp is not None:
+            return cp
+    return None
+
+
+def get_store():
+    from adaptagent.checkpoint import get_store as _get_store
+
+    return _get_store()
 
 
 def _json(status: int, payload: dict[str, Any]) -> dict[str, Any]:
@@ -97,14 +134,57 @@ async def _augment_manager(manager: AgentManager, graph: Any, payload: dict[str,
                     stat["mcp_errors"].append(f"custom tool: {str(exc)[:300]}")
         manager.tools = tools
         manager.build_agents_from_workflow(graph, llm_config=None, assign_tools=bool(tools))
+        applied = []
         if skills:
             from adaptagent.skills import apply_skills
 
-            stat["skills"] = apply_skills(manager, skills)
+            applied = apply_skills(manager, skills)
+        stat["skills"] = applied
+        method = payload.get("methodology") or ""
+        if method:
+            from adaptagent.skills import apply_methodology
+
+            applied_method = apply_methodology(manager, method)
+            if applied_method:
+                stat["methodology"] = applied_method
     finally:
         if mcp_client is not None:
             await mcp_client.close()
     return stat
+
+
+def _methodology() -> dict[str, Any]:
+    """Serve the available methodology contracts + the reusable skills kit."""
+    from adaptagent import skills as skills_mod
+
+    return _json(
+        200,
+        {
+            "methods": sorted(skills_mod.METHODOLOGY_CONTRACTS),
+            "skills": skills_mod.SUPERPOWERS_SKILLS,
+        },
+    )
+
+
+def _checkpoints() -> dict[str, Any]:
+    """List stored runs (server-side checkpoint history)."""
+    store = get_store()
+    latest = store.latest()
+    return _json(
+        200,
+        {
+            "latest": latest.to_dict() if latest else None,
+            "history": store.history(),
+        },
+    )
+
+
+def _run_checkpoint(run_id: str) -> dict[str, Any]:
+    """Fetch one stored run checkpoint by run_id."""
+    cp = get_store().get(run_id)
+    if cp is None:
+        return _json(404, {"error": f"run '{run_id}' not found"})
+    return _json(200, cp.to_dict())
 
 
 async def _mcp_test(payload: dict[str, Any]) -> dict[str, Any]:
@@ -177,8 +257,21 @@ async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
     manager.register_llm(llm)
     advanced = await _augment_manager(manager, graph, payload)
 
+    stop_when = _stop_when_from_payload(payload)
+    resume_cp = _checkpoint_from_payload(payload)
+    run_id = (payload.get("run_id") or "").strip() or (resume_cp.run_id if resume_cp else uuid.uuid4().hex[:8])
+
     start = time.time()
-    workflow = Workflow(graph=graph, agent_manager=manager, llm=llm, max_parallel=2)
+    workflow = Workflow(
+        graph=graph,
+        agent_manager=manager,
+        llm=llm,
+        max_parallel=2,
+        stop_when=stop_when,
+        checkpoint=resume_cp,
+        checkpoint_store=get_store(),
+        run_id=run_id,
+    )
     try:
         output = await asyncio.wait_for(workflow.execute(), timeout=MAX_EXECUTION_SECONDS)
     except asyncio.TimeoutError:
@@ -193,6 +286,10 @@ async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
         }
         for sid, result in output.results.items()
     ]
+    from adaptagent.checkpoint import checkpoint_from
+
+    final_cp = checkpoint_from(run_id, graph.goal, graph.topo_order(), output.results)
+    get_store().save(final_cp)
     return _json(
         200,
         {
@@ -203,6 +300,9 @@ async def _execute(payload: dict[str, Any]) -> dict[str, Any]:
             "cost_usd": round(output.total_cost_usd, 6),
             "usage": output.total_usage,
             "meta": advanced,
+            "run_id": run_id,
+            "stopped": output.stopped,
+            "checkpoint": final_cp.to_dict(),
         },
     )
 
@@ -287,7 +387,13 @@ class _App:
             try:
                 if path.endswith("/execute/stream"):
                     return await self._stream_execute(payload, send)
-                if path.endswith("/mcp/test"):
+                if path.startswith("/api/checkpoints/"):
+                    response = _run_checkpoint(path.split("/api/checkpoints/")[1].split("?")[0])
+                elif path.endswith("/api/checkpoints"):
+                    response = _checkpoints()
+                elif path.endswith("/methodology"):
+                    response = _methodology()
+                elif path.endswith("/mcp/test"):
                     response = await _mcp_test(payload)
                 elif path.endswith("/step"):
                     response = await _execute_step(payload)
@@ -337,6 +443,10 @@ class _App:
             manager = AgentManager()
             manager.register_llm(llm)
             advanced = await _augment_manager(manager, graph, payload)
+            stop_when = _stop_when_from_payload(payload)
+            resume_cp = _checkpoint_from_payload(payload)
+            run_id = (payload.get("run_id") or "").strip() or (resume_cp.run_id if resume_cp else uuid.uuid4().hex[:8])
+            advanced["run_id"] = run_id
             await sse({"event": "meta", "meta": advanced})
         except KeyError as exc:
             await sse({"event": "error", "error": f"invalid workflow: missing field {exc}"})
@@ -353,6 +463,10 @@ class _App:
             llm=llm,
             max_parallel=2,
             on_event=lambda e: sse(e),
+            stop_when=stop_when,
+            checkpoint=resume_cp,
+            checkpoint_store=get_store(),
+            run_id=run_id,
         )
         try:
             await asyncio.wait_for(workflow.execute(), timeout=MAX_EXECUTION_SECONDS)

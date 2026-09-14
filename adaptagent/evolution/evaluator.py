@@ -39,7 +39,7 @@ Output to evaluate:
 
 Evaluate: correctness, completeness, relevance, quality. Respond with a single integer 0-100 \
 and a one-line justification, in this exact format:
-SCORE: <number> | {justification}"""
+SCORE: <number> | {{justification}}"""
 
     def __init__(self, llm: "LLM", name: str = "llm_judge") -> None:
         super().__init__(name=name, fn=self._judge)
