@@ -4,15 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from fake_http import FakeHTTPServer  # noqa: E402
 
-from adaptagent.config import _load_env_file  # noqa: E402
 from adaptagent.llm.base import LLMConfig  # noqa: E402
 from adaptagent.llm.openai_compat import AnthropicLLM  # noqa: E402
 
