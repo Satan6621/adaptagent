@@ -53,8 +53,8 @@ def _execute(code: str, timeout: int = 20) -> str:
     p.start()
     p.join(timeout)
     if p.is_alive():
-        p.terminate()
-        p.join()
+        p.kill()  # noqa: S701 - terminate() is a no-op on stuck spawn'd children on Windows
+        p.join(timeout=1)
         return "Error: timeout"
     try:
         status, output = q.get()
